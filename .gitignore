@@ -1,0 +1,19 @@
+
+# Recursive reflection outputs
+recursive_reflection_*.json
+recursive_reflection_*.md
+results/existential-*/
+results/mood-*.md
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Model downloads (these are huge)
+*.bin
+*.safetensors
+*.gguf
+
+# Ollama model cache (if local)
+.ollama/

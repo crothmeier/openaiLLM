@@ -1,0 +1,5 @@
+requests
+textblob
+pandas
+matplotlib
+seaborn
