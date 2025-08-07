@@ -5,8 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=crathmene
-Group=crathmene
+# Use systemd specifier for dynamic user
+User=%u
+Group=%g
+DynamicUser=yes
 WorkingDirectory=/mnt/nvme/models
 
 # Environment variables for NVMe storage
@@ -32,6 +34,17 @@ RestartSec=10
 # Resource limits
 LimitNOFILE=65536
 LimitNPROC=65536
+
+# Security hardening
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/nvme
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+PrivateMounts=yes
 
 # Logging
 StandardOutput=journal

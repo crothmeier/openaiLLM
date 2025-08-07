@@ -3,6 +3,11 @@ set -euo pipefail
 
 # Model Download Script with NVMe Storage
 
+# Source security validation module
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./security/validate.sh
+source "${SCRIPT_DIR}/security/validate.sh"
+
 # Ensure environment is set
 export HF_HOME=/mnt/nvme/hf-cache
 export TRANSFORMERS_CACHE=/mnt/nvme/hf-cache
@@ -17,28 +22,64 @@ echo ""
 
 # Function to download HuggingFace models
 download_hf_model() {
-    local model_id=$1
-    local model_name=$(echo $model_id | sed 's/\//-/g')
+    local model_id="$1"
     
-    echo "Downloading $model_id to /mnt/nvme/models/$model_name..."
+    # Validate model ID using security module
+    if ! validate_hf_model_id "$model_id"; then
+        log_security_event "VALIDATION_FAILED" "Invalid HF model ID: $model_id"
+        return 1
+    fi
     
+    # Validate environment variables
+    validate_env_vars || return 1
+    
+    # Sanitize model name for filesystem
+    local model_name
+    model_name=$(sanitize_string "$(echo "$model_id" | sed 's/\//-/g')")
+    
+    # Validate target directory
+    local target_dir="/mnt/nvme/models/$model_name"
+    validate_write_directory "/mnt/nvme/models" >/dev/null || return 1
+    
+    echo "Downloading $model_id to $target_dir..."
+    log_security_event "DOWNLOAD_START" "HF model: $model_id"
+    
+    # Add --no-symlinks flag for security
     huggingface-cli download "$model_id" \
-        --local-dir "/mnt/nvme/models/$model_name" \
+        --local-dir "$target_dir" \
         --local-dir-use-symlinks False \
+        --no-symlinks \
         --resume-download
     
-    echo "✓ Downloaded to /mnt/nvme/models/$model_name"
-    echo "  Size: $(du -sh /mnt/nvme/models/$model_name | cut -f1)"
+    echo "✓ Downloaded to $target_dir"
+    echo "  Size: $(du -sh "$target_dir" | cut -f1)"
+    log_security_event "DOWNLOAD_COMPLETE" "HF model: $model_id"
 }
 
 # Function to pull Ollama models
 pull_ollama_model() {
-    local model=$1
+    local model="$1"
     
-    echo "Pulling Ollama model: $model"
-    ollama pull "$model"
+    # Validate Ollama model name using security module
+    if ! validate_ollama_model "$model"; then
+        log_security_event "VALIDATION_FAILED" "Invalid Ollama model: $model"
+        return 1
+    fi
+    
+    # Validate environment variables
+    validate_env_vars || return 1
+    
+    # Sanitize model name
+    local sanitized_model
+    sanitized_model=$(sanitize_string "$model")
+    
+    echo "Pulling Ollama model: $sanitized_model"
+    log_security_event "DOWNLOAD_START" "Ollama model: $sanitized_model"
+    
+    ollama pull "$sanitized_model"
     
     echo "✓ Model stored in $OLLAMA_MODELS"
+    log_security_event "DOWNLOAD_COMPLETE" "Ollama model: $sanitized_model"
 }
 
 # Main menu

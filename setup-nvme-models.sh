@@ -4,8 +4,19 @@ set -euo pipefail
 # NVMe Model Storage Setup Script
 # Ensures all AI models (HF, vLLM, Ollama) use /mnt/nvme
 
+# Source security validation module
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./security/validate.sh
+source "${SCRIPT_DIR}/security/validate.sh"
+
 NVME_BASE="/mnt/nvme"
 USER_NAME="${SUDO_USER:-$USER}"
+
+# Validate base path
+if ! validate_path "$NVME_BASE" "/" >/dev/null; then
+    echo "Error: Invalid NVMe base path" >&2
+    exit 1
+fi
 
 echo "=== Setting up NVMe storage for AI models ==="
 
