@@ -1,0 +1,41 @@
+[Unit]
+Description=vLLM Inference Server with NVMe Storage
+After=network-online.target nvidia-persistenced.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=crathmene
+Group=crathmene
+WorkingDirectory=/mnt/nvme/models
+
+# Environment variables for NVMe storage
+Environment="HF_HOME=/mnt/nvme/hf-cache"
+Environment="TRANSFORMERS_CACHE=/mnt/nvme/hf-cache"
+Environment="HUGGINGFACE_HUB_CACHE=/mnt/nvme/hf-cache"
+Environment="CUDA_VISIBLE_DEVICES=0"
+
+# Start command - adjust model as needed
+ExecStart=/usr/local/bin/vllm serve meta-llama/Llama-2-7b-hf \
+    --download-dir /mnt/nvme/models \
+    --gpu-memory-utilization 0.90 \
+    --port 8000 \
+    --host 0.0.0.0 \
+    --tensor-parallel-size 1 \
+    --dtype auto \
+    --max-model-len 4096
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=65536
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

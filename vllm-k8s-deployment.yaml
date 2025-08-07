@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-server
+  namespace: ai-models
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:latest
+        env:
+        - name: HF_HOME
+          value: /mnt/nvme/hf-cache
+        - name: TRANSFORMERS_CACHE
+          value: /mnt/nvme/hf-cache
+        - name: HUGGINGFACE_HUB_CACHE
+          value: /mnt/nvme/hf-cache
+        args:
+        - "serve"
+        - "meta-llama/Llama-2-7b-hf"
+        - "--download-dir"
+        - "/mnt/nvme/models"
+        - "--gpu-memory-utilization"
+        - "0.90"
+        - "--port"
+        - "8000"
+        - "--host"
+        - "0.0.0.0"
+        - "--tensor-parallel-size"
+        - "1"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: 32Gi
+          requests:
+            nvidia.com/gpu: 1
+            memory: 16Gi
+        volumeMounts:
+        - name: nvme-storage
+          mountPath: /mnt/nvme
+        - name: shm
+          mountPath: /dev/shm
+        ports:
+        - containerPort: 8000
+          name: http
+      volumes:
+      - name: nvme-storage
+        hostPath:
+          path: /mnt/nvme
+          type: Directory
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
+      nodeSelector:
+        nvidia.com/gpu: "true"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-service
+  namespace: ai-models
+spec:
+  selector:
+    app: vllm
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+  type: ClusterIP
