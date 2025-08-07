@@ -17,3 +17,5 @@ __pycache__/
 
 # Ollama model cache (if local)
 .ollama/
+llama.cpp/
+test-outputs/
