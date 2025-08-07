@@ -1,6 +1,26 @@
 version: '3.8'
 
 services:
+  # Optional: Run setup verification before starting Ollama
+  nvme-setup:
+    image: python:3.9-slim
+    container_name: nvme-setup-check
+    command: |
+      bash -c "
+      # Check if NVMe is mounted
+      if ! mountpoint -q /mnt/nvme; then
+        echo 'ERROR: NVMe not mounted at /mnt/nvme'
+        echo 'Run: nvme-models setup  # or ./nvme-model-storage/setup-nvme-models.sh'
+        exit 1
+      fi
+      # Ensure directories exist
+      mkdir -p /mnt/nvme/ollama
+      echo 'NVMe storage ready for Ollama'
+      "
+    volumes:
+      - /mnt/nvme:/mnt/nvme
+    restart: "no"
+
   ollama:
     image: ollama/ollama:latest
     container_name: ollama-nvme
