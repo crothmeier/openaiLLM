@@ -1,0 +1,5 @@
+click>=8.0.0
+rich>=10.0.0
+pyyaml>=5.4.0
+requests>=2.25.0
+huggingface-hub>=0.16.0
