@@ -71,6 +71,32 @@ huggingface-cli download meta-llama/Llama-2-7b-hf \
   --local-dir /mnt/nvme/models/llama-2-7b-hf
 ```
 
+### Start llama.cpp Server
+```bash
+export LLAMA_SERVER_URL=http://127.0.0.1:8010
+sudo systemctl start llamacpp
+```
+
+### Test llama.cpp Endpoints
+```bash
+# Test native completion endpoint
+curl -X POST http://127.0.0.1:8010/completion \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Hello, ", "n_predict": 20}'
+
+# Test OpenAI-compatible chat endpoint
+curl -X POST http://127.0.0.1:8010/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-oss-20b",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 50
+  }'
+
+# Check metrics endpoint
+curl http://127.0.0.1:8010/metrics
+```
+
 ### Start vLLM Server
 ```bash
 ./vllm-nvme-server.sh meta-llama/Llama-2-7b-hf 8000 0.90
