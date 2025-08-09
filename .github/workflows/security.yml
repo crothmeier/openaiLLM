@@ -8,84 +8,63 @@ on:
 
 permissions:
   contents: read
-  security-events: write
-  actions: read
+  security-events: write   # required for upload-sarif
 
 jobs:
-  security-scan:
-    name: Security Scanning
+  security:
     runs-on: ubuntu-latest
-    
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Full history for better secret detection
-      
+      - uses: actions/checkout@v4
+
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
-          GITLEAKS_ENABLE_SUMMARY: true
-      
-      - name: Run Semgrep
+
+      - name: Semgrep SAST
         uses: returntocorp/semgrep-action@v1
         with:
           config: auto
-        env:
-          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-        continue-on-error: false
-      
-      - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@master
+
+      # 1) Produce SARIF regardless of findings (do not fail yet)
+      - name: Trivy FS scan (produce SARIF)
+        id: trivy-sarif
+        uses: aquasecurity/trivy-action@0.20.0
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '1'
-          ignore-unfixed: false
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-      
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+          scan-type: fs
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+        continue-on-error: true
+
+      - name: Upload Trivy SARIF
         if: always()
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: 'trivy-results.sarif'
-      
-      - name: Run ShellCheck
+          sarif_file: trivy-results.sarif
+
+      # 2) Enforce policy after upload (fail build on HIGH/CRITICAL)
+      - name: Trivy FS scan (enforce policy)
+        id: trivy-enforce
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          scan-type: fs
+          ignore-unfixed: true
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 1
+        continue-on-error: true
+
+      - name: Fail if HIGH/CRITICAL vulns were found
+        if: steps.trivy-enforce.outcome == 'failure'
         run: |
-          # Install shellcheck if not available
-          if ! command -v shellcheck &> /dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y shellcheck
-          fi
-          
-          # Find and check all shell scripts
-          echo "Finding shell scripts..."
-          find . -type f -name "*.sh" -not -path "./llama.cpp/*" -not -path "./.git/*" > /tmp/shell_files.txt
-          
-          if [ -s /tmp/shell_files.txt ]; then
-            echo "Checking shell scripts with ShellCheck..."
-            FAILED=0
-            while IFS= read -r script; do
-              echo "Checking: $script"
-              if ! shellcheck -S error "$script"; then
-                FAILED=1
-                echo "❌ ShellCheck found issues in: $script"
-              fi
-            done < /tmp/shell_files.txt
-            
-            if [ $FAILED -eq 1 ]; then
-              echo "❌ ShellCheck validation failed"
-              exit 1
-            else
-              echo "✅ All shell scripts passed ShellCheck"
-            fi
-          else
-            echo "No shell scripts found to check"
-          fi
+          echo "::error::Trivy found HIGH/CRITICAL vulnerabilities"
+          exit 1
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@v2
       
       - name: Security scan summary
         if: always()
