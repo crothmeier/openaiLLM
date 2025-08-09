@@ -4,6 +4,69 @@
 
 set -euo pipefail
 
+# POSIX-safe function to validate model ID - rejects traversal and unsafe chars
+# Returns 0 if valid, 1 if invalid (exits with nonzero on violation)
+validate_model_id() {
+    local model_id="$1"
+    
+    # Check if model_id is empty
+    if [[ -z "$model_id" ]]; then
+        echo "ERROR: Model ID cannot be empty" >&2
+        return 1
+    fi
+    
+    # Check for path traversal attempts
+    case "$model_id" in
+        *..*)
+            echo "ERROR: Model ID contains path traversal sequence (..)" >&2
+            return 1
+            ;;
+        */*)
+            # Allow forward slashes for organization/model format
+            # But check for double slashes and leading/trailing slashes
+            case "$model_id" in
+                //*|*//|/*|*/)
+                    echo "ERROR: Model ID contains invalid slash patterns" >&2
+                    return 1
+                    ;;
+            esac
+            ;;
+    esac
+    
+    # Check for unsafe characters using POSIX character classes
+    # Allow only alphanumeric, dash, underscore, dot, and single forward slash
+    if ! echo "$model_id" | grep -qE '^[A-Za-z0-9._/-]+$'; then
+        echo "ERROR: Model ID contains unsafe characters" >&2
+        echo "       Allowed: alphanumeric, dash, underscore, dot, forward slash" >&2
+        return 1
+    fi
+    
+    # Check for special shell characters that could cause issues
+    case "$model_id" in
+        *[\;\|\&\<\>\$\`\(\)\{\}\[\]\*\?\~\!\#\%\^\=\+\\\'\"]*)
+            echo "ERROR: Model ID contains shell special characters" >&2
+            return 1
+            ;;
+    esac
+    
+    # Additional check for hidden files/directories
+    case "$model_id" in
+        .*|*/.*)
+            echo "ERROR: Model ID cannot reference hidden files or directories" >&2
+            return 1
+            ;;
+    esac
+    
+    # Check maximum length (reasonable limit)
+    if [[ ${#model_id} -gt 256 ]]; then
+        echo "ERROR: Model ID exceeds maximum length of 256 characters" >&2
+        return 1
+    fi
+    
+    # If all checks pass
+    return 0
+}
+
 # Validate and sanitize file paths to prevent path traversal
 validate_path() {
     local path="$1"
@@ -210,6 +273,7 @@ log_security_event() {
 }
 
 # Export functions for use by other scripts
+export -f validate_model_id
 export -f validate_path
 export -f sanitize_string
 export -f validate_hf_model_id

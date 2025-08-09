@@ -1,0 +1,66 @@
+[Unit]
+Description=llama.cpp Inference Server (Hardened)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+RuntimeDirectory=openaiLLM
+WorkingDirectory=/var/lib/openaiLLM
+
+# Environment variables
+Environment="LLAMA_CUDA=1"
+Environment="CUDA_VISIBLE_DEVICES=0"
+
+# Start command - adjust model path and parameters as needed
+ExecStart=/usr/local/bin/llama-server \
+    --model /var/lib/openaiLLM/models/llama-2-7b.gguf \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --n-gpu-layers 35 \
+    --ctx-size 4096 \
+    --threads 4
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=65536
+
+# Security hardening - As per systemd.exec guidance
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+SystemCallFilter=@system-service
+CapabilityBoundingSet=~CAP_SYS_ADMIN CAP_SYS_PTRACE
+ReadWritePaths=/var/lib/openaiLLM
+
+# Additional hardening
+RestrictRealtime=yes
+RemoveIPC=yes
+PrivateMounts=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+SystemCallErrorNumber=EPERM
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
