@@ -64,7 +64,7 @@ jobs:
           exit 1
 
       - name: ShellCheck
-        uses: ludeeus/action-shellcheck@v2
+        uses: ludeeus/action-shellcheck@2.0.0
       
       - name: Security scan summary
         if: always()
