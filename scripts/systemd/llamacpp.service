@@ -1,66 +1,54 @@
 [Unit]
-Description=llama.cpp Inference Server (Hardened)
+Description=llama.cpp server (GPT-OSS-20B @ 8010)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-DynamicUser=yes
-RuntimeDirectory=openaiLLM
-WorkingDirectory=/var/lib/openaiLLM
+User=llama
+Group=llama
+EnvironmentFile=/etc/default/llamacpp
+Environment=LD_LIBRARY_PATH=/srv/llama:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+WorkingDirectory=/srv/llama
+ExecStartPre=/usr/local/lib/openaiLLM/check_port_free.sh ${LLAMA_PORT}
+ExecStart=/srv/llama/llama-server \
+  --no-webui \
+  --model ${MODEL_PATH} \
+  --host ${LLAMA_HOST} \
+  --port ${LLAMA_PORT} \
+  --alias gpt-oss-20b \
+  --chat-template /mnt/models/gpt-oss-20b/chat_template.jinja \
+  --mlock \
+  --n-gpu-layers ${N_GPU_LAYERS} \
+  --ctx-size ${CTX_SIZE}
 
-# Environment variables
-Environment="LLAMA_CUDA=1"
-Environment="CUDA_VISIBLE_DEVICES=0"
-
-# Start command - adjust model path and parameters as needed
-ExecStart=/usr/local/bin/llama-server \
-    --model /var/lib/openaiLLM/models/llama-2-7b.gguf \
-    --host 127.0.0.1 \
-    --port 8080 \
-    --n-gpu-layers 35 \
-    --ctx-size 4096 \
-    --threads 4
-
-# Restart policy
-Restart=on-failure
-RestartSec=10
-
-# Resource limits
-LimitNOFILE=65536
-LimitNPROC=65536
-
-# Security hardening - As per systemd.exec guidance
-NoNewPrivileges=yes
+# Allow mlock, keep defense-in-depth
+LimitMEMLOCK=infinity
+NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=yes
-PrivateDevices=yes
-RestrictSUIDSGID=yes
+ProtectHome=yes
+PrivateTmp=true
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia0 rw
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-SystemCallFilter=@system-service
-CapabilityBoundingSet=~CAP_SYS_ADMIN CAP_SYS_PTRACE
-ReadWritePaths=/var/lib/openaiLLM
+SystemCallFilter=@system-service @basic-io @file-system @network-io
 
-# Additional hardening
-RestrictRealtime=yes
-RemoveIPC=yes
-PrivateMounts=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-RestrictNamespaces=yes
-LockPersonality=yes
-MemoryDenyWriteExecute=yes
-RestrictRealtime=yes
-ProtectHostname=yes
-ProtectClock=yes
-ProtectKernelLogs=yes
-SystemCallErrorNumber=EPERM
+# Minimal writes
+ReadOnlyPaths=/
+ReadWritePaths=/var/log/openaiLLM
 
-# Logging
-StandardOutput=journal
-StandardError=journal
+Restart=always
+RestartSec=3s
 
 [Install]
 WantedBy=multi-user.target

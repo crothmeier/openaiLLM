@@ -1,0 +1,7 @@
+# llama.cpp service configuration
+# Update MODEL_PATH when the actual model is available at /mnt/nvme/models/gpt-oss-20b/gpt-oss-20b.Q8_0.gguf
+MODEL_PATH=/mnt/models/gpt-oss-20b/gpt-oss-20b-q8_0.gguf
+LLAMA_HOST=127.0.0.1
+LLAMA_PORT=8010
+N_GPU_LAYERS=-1
+CTX_SIZE=8192
