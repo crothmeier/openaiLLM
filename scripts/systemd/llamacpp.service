@@ -20,7 +20,8 @@ ExecStart=/srv/llama/llama-server \
   --chat-template /mnt/models/gpt-oss-20b/chat_template.jinja \
   --mlock \
   --n-gpu-layers ${N_GPU_LAYERS} \
-  --ctx-size ${CTX_SIZE}
+  --ctx-size ${CTX_SIZE} \
+  --metrics
 
 # Allow mlock, keep defense-in-depth
 LimitMEMLOCK=infinity
