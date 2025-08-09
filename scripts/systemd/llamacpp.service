@@ -18,6 +18,7 @@ ExecStart=/srv/llama/llama-server \
   --port ${LLAMA_PORT} \
   --alias gpt-oss-20b \
   --chat-template /mnt/models/gpt-oss-20b/chat_template.jinja \
+  --jinja \
   --mlock \
   --n-gpu-layers ${N_GPU_LAYERS} \
   --ctx-size ${CTX_SIZE} \
