@@ -1,0 +1,69 @@
+[Unit]
+Description=vLLM Inference Server with NVMe Storage (Hardened)
+After=network-online.target nvidia-persistenced.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+RuntimeDirectory=openaiLLM
+WorkingDirectory=/var/lib/openaiLLM
+
+# Environment variables for NVMe storage
+Environment="HF_HOME=/var/lib/openaiLLM/hf-cache"
+Environment="TRANSFORMERS_CACHE=/var/lib/openaiLLM/hf-cache"
+Environment="HUGGINGFACE_HUB_CACHE=/var/lib/openaiLLM/hf-cache"
+Environment="CUDA_VISIBLE_DEVICES=0"
+
+# Start command - adjust model as needed
+ExecStart=/usr/local/bin/vllm serve meta-llama/Llama-2-7b-hf \
+    --download-dir /var/lib/openaiLLM/models \
+    --gpu-memory-utilization 0.90 \
+    --port 8000 \
+    --host 127.0.0.1 \
+    --tensor-parallel-size 1 \
+    --dtype auto \
+    --max-model-len 4096
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=65536
+
+# Security hardening - As per systemd.exec guidance
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+SystemCallFilter=@system-service
+CapabilityBoundingSet=~CAP_SYS_ADMIN CAP_SYS_PTRACE
+ReadWritePaths=/var/lib/openaiLLM
+
+# Additional hardening
+RestrictRealtime=yes
+RemoveIPC=yes
+PrivateMounts=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+SystemCallErrorNumber=EPERM
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

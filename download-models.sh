@@ -24,10 +24,16 @@ echo ""
 download_hf_model() {
     local model_id="$1"
     
-    # Validate model ID using security module
+    # First validate with the new validate_model_id function for path traversal
+    if ! validate_model_id "$model_id"; then
+        log_security_event "VALIDATION_FAILED" "Model ID validation failed: $model_id"
+        exit 1  # Exit nonzero on violation
+    fi
+    
+    # Then validate HF-specific format
     if ! validate_hf_model_id "$model_id"; then
-        log_security_event "VALIDATION_FAILED" "Invalid HF model ID: $model_id"
-        return 1
+        log_security_event "VALIDATION_FAILED" "Invalid HF model ID format: $model_id"
+        exit 1  # Exit nonzero on violation
     fi
     
     # Validate environment variables
@@ -60,10 +66,16 @@ download_hf_model() {
 pull_ollama_model() {
     local model="$1"
     
-    # Validate Ollama model name using security module
+    # First validate with the new validate_model_id function for path traversal
+    if ! validate_model_id "$model"; then
+        log_security_event "VALIDATION_FAILED" "Model ID validation failed: $model"
+        exit 1  # Exit nonzero on violation
+    fi
+    
+    # Then validate Ollama-specific format
     if ! validate_ollama_model "$model"; then
-        log_security_event "VALIDATION_FAILED" "Invalid Ollama model: $model"
-        return 1
+        log_security_event "VALIDATION_FAILED" "Invalid Ollama model format: $model"
+        exit 1  # Exit nonzero on violation
     fi
     
     # Validate environment variables

@@ -1,0 +1,34 @@
+# NVMe Model Storage Configuration
+# This file configures the nvme-models CLI tool
+
+storage:
+  nvme_path: /mnt/nvme
+  require_mount: true
+  min_free_space_gb: 50
+
+providers:
+  huggingface:
+    cache_dir: ${nvme_path}/hf-cache
+    models_dir: ${nvme_path}/models
+    use_symlinks: false
+    resume_downloads: true
+  
+  ollama:
+    models_dir: ${nvme_path}/ollama
+    default_tag: latest
+  
+  vllm:
+    models_dir: ${nvme_path}/models
+    cache_dir: ${nvme_path}/vllm-cache
+
+monitoring:
+  enable_metrics: true
+  log_level: INFO
+  log_file: ${nvme_path}/logs/nvme-models.log
+
+security:
+  validate_model_ids: true
+  allowed_domains:
+    - huggingface.co
+    - ollama.ai
+  enable_audit_log: true

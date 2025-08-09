@@ -13,6 +13,29 @@ spec:
       labels:
         app: vllm
     spec:
+      initContainers:
+      - name: nvme-setup
+        image: python:3.9-slim
+        command: 
+        - /bin/bash
+        - -c
+        - |
+          # Install nvme-models CLI if needed
+          pip install click rich pyyaml requests huggingface-hub
+          # Run verification
+          python -c "
+          import subprocess
+          import sys
+          # Try to verify NVMe setup
+          result = subprocess.run(['mountpoint', '-q', '/mnt/nvme'], capture_output=True)
+          if result.returncode != 0:
+              print('ERROR: NVMe not mounted at /mnt/nvme')
+              sys.exit(1)
+          print('NVMe storage verified')
+          "
+        volumeMounts:
+        - name: nvme-storage
+          mountPath: /mnt/nvme
       containers:
       - name: vllm
         image: vllm/vllm-openai:latest
