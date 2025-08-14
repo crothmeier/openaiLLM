@@ -20,3 +20,4 @@ patches:
   - path: patch-shm.yaml
   - path: patch-cuda-fix.yaml
   - path: patch-nvidia-libs.yaml
+  - path: patch-runtime-class.yaml
