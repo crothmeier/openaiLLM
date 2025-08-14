@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY nvme_models/ nvme_models/
+COPY setup.py .
+RUN pip install --no-cache-dir .
+RUN apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["nvme-models"]
