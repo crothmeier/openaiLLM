@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: ai-infer
+spec:
+  template:
+    spec:
+      containers:
+      - name: vllm
+        args:
+        - "--model"
+        - "mistralai/Mistral-7B-Instruct-v0.2"
+        - "--host"
+        - "0.0.0.0"
+        - "--port"
+        - "8000"
+        - "--gpu-memory-utilization"
+        - "0.92"
+        - "--max-num-seqs"
+        - "32"
+        - "--download-dir"
+        - "/mnt/nvme/hf-cache"
