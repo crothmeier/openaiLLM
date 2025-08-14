@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: ai-infer
+spec:
+  template:
+    spec:
+      containers:
+      - name: vllm
+        env:
+        - name: CUDA_VISIBLE_DEVICES
+          value: "all"
+        - name: VLLM_DEVICE
+          value: "cuda"
+        - name: VLLM_LOGGING_LEVEL
+          value: "DEBUG"

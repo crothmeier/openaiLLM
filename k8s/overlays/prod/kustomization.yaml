@@ -18,3 +18,4 @@ patches:
   - path: patch-vllm-env.yaml
   - path: patch-remove-metrics.yaml
   - path: patch-shm.yaml
+  - path: patch-cuda-fix.yaml
