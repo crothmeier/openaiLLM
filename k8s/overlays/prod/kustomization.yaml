@@ -15,3 +15,6 @@ patches:
         path: /spec/template/spec/containers/0/resources/requests/cpu
         value: "5"
   - path: patch-nvme-image.yaml
+  - path: patch-vllm-env.yaml
+  - path: patch-remove-metrics.yaml
+  - path: patch-shm.yaml
