@@ -19,3 +19,6 @@ __pycache__/
 .ollama/
 llama.cpp/
 test-outputs/
+
+# Local debug manifests
+/debug-*.yaml

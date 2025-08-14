@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: ai-infer
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: vllm } }
+  template:
+    metadata:
+      labels: { app: vllm }
+      annotations:
+        nvme.verify.contract: "v1.0.0"
+    spec:
+      nodeSelector: { gpu: "nvidia" }
+      volumes:
+      - name: models
+        persistentVolumeClaim: { claimName: pvc-nvme-hotcache }
+      - name: work
+        emptyDir: {}
+      initContainers:
+      - name: nvme-verify
+        image: ghcr.io/yourorg/nvme-models:latest
+        command: ["/bin/sh","-lc"]
+        args:
+          - >
+            set -e;
+            nvme-models verify --format json > /work/verify.json;
+            # fail only on explicit "fail" statuses; warnings pass
+            ! jq -e '.checks[] | select(.status=="fail")' /work/verify.json >/dev/null;
+        volumeMounts:
+        - { name: models, mountPath: /mnt/nvme }
+        - { name: work,   mountPath: /work }
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:latest
+        args: [
+          "--model","/mnt/nvme/models/hf/mistral-7b-instruct",
+          "--host","0.0.0.0","--port","8000",
+          "--gpu-memory-utilization","0.92","--max-num-seqs","32"
+        ]
+        ports: [{ name: http, containerPort: 8000 }]
+        resources:
+          limits:   { nvidia.com/gpu: 1, cpu: "12", memory: "48Gi" }
+          requests: { nvidia.com/gpu: 1, cpu: "6",  memory: "24Gi" }
+        volumeMounts:
+        - { name: models, mountPath: /mnt/nvme }
+        readinessProbe:
+          httpGet: { path: /health, port: 8000 }
+          periodSeconds: 5
+          failureThreshold: 12
+        livenessProbe:
+          httpGet: { path: /health, port: 8000 }
+          initialDelaySeconds: 60
+          periodSeconds: 10
+      - name: nvme-metrics
+        image: ghcr.io/yourorg/nvme-models:latest
+        args: ["--metrics-port","9109","serve-metrics"]
+        ports: [{ name: metrics, containerPort: 9109 }]
+        volumeMounts:
+        - { name: models, mountPath: /mnt/nvme }
+      securityContext:
+        fsGroup: 2000
