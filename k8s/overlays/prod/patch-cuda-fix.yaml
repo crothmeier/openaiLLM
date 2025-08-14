@@ -10,7 +10,7 @@ spec:
       - name: vllm
         env:
         - name: CUDA_VISIBLE_DEVICES
-          value: "all"
+          value: "0"
         - name: VLLM_DEVICE
           value: "cuda"
         - name: VLLM_LOGGING_LEVEL
