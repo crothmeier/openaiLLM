@@ -10,7 +10,7 @@ spec:
       - name: vllm
         args:
         - "--model"
-        - "mistralai/Mistral-7B-Instruct-v0.2"
+        - "TheBloke/Mistral-7B-Instruct-v0.2-GPTQ"
         - "--host"
         - "0.0.0.0"
         - "--port"
