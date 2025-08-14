@@ -19,3 +19,4 @@ patches:
   - path: patch-remove-metrics.yaml
   - path: patch-shm.yaml
   - path: patch-cuda-fix.yaml
+  - path: patch-nvidia-libs.yaml
