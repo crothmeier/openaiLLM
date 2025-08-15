@@ -307,3 +307,101 @@ class Validator:
         
         # Default conservative estimate
         return 10
+
+
+class SecurityValidator:
+    """Security-focused validation for inputs to prevent common vulnerabilities."""
+    
+    @staticmethod
+    def validate_path_traversal(path: str) -> bool:
+        """Validate that a path doesn't contain directory traversal attempts.
+        
+        Args:
+            path: Path string to validate
+            
+        Returns:
+            bool: False if path contains traversal patterns or absolute paths, True otherwise
+        """
+        # Check for directory traversal patterns
+        if '../' in path or '..\\' in path:
+            return False
+        
+        # Check for absolute paths (Unix)
+        if path.startswith('/'):
+            return False
+        
+        # Check for Windows drive letters
+        if len(path) >= 2 and path[1] == ':':
+            # Check for patterns like C:, D:, etc.
+            if path[0].isalpha():
+                return False
+        
+        # Check for UNC paths (Windows network paths)
+        if path.startswith('\\\\'):
+            return False
+        
+        return True
+    
+    @staticmethod
+    def validate_command_injection(input_str: str) -> bool:
+        """Validate that input doesn't contain shell metacharacters.
+        
+        Args:
+            input_str: Input string to validate
+            
+        Returns:
+            bool: False if input contains dangerous shell metacharacters, True otherwise
+        """
+        # Define dangerous shell metacharacters
+        dangerous_chars = [
+            ';',   # Command separator
+            '|',   # Pipe
+            '&',   # Background/command separator
+            '$',   # Variable expansion
+            '`',   # Command substitution
+            '(',   # Subshell
+            ')',   # Subshell
+            '{',   # Command grouping
+            '}',   # Command grouping
+            '<',   # Input redirection
+            '>',   # Output redirection
+            '\n',  # Newline
+            '\r',  # Carriage return
+        ]
+        
+        # Check for presence of any dangerous character
+        for char in dangerous_chars:
+            if char in input_str:
+                return False
+        
+        return True
+    
+    @staticmethod
+    def sanitize_for_filesystem(name: str) -> str:
+        """Sanitize a string for safe use as a filesystem name.
+        
+        Args:
+            name: String to sanitize
+            
+        Returns:
+            str: Sanitized string safe for filesystem use
+        """
+        # Remove leading/trailing spaces and dots
+        name = name.strip(' .')
+        
+        # Replace characters not in allowed set with underscores
+        # Allowed: alphanumeric, dot, underscore, hyphen
+        sanitized = re.sub(r'[^a-zA-Z0-9._\-]', '_', name)
+        
+        # Remove leading dots (hidden files) and trailing dots
+        sanitized = sanitized.lstrip('.').rstrip('.')
+        
+        # Limit length to 255 characters (common filesystem limit)
+        if len(sanitized) > 255:
+            sanitized = sanitized[:255]
+        
+        # If empty after sanitization, provide a default
+        if not sanitized:
+            sanitized = 'unnamed'
+        
+        return sanitized
