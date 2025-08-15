@@ -4,6 +4,7 @@ import os
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 import logging
@@ -573,6 +574,167 @@ class NVMeStorageManager:
             return False
         
         return handler.download(model_id, **kwargs)
+    
+    def download_atomic(self, provider: str, model_id: str, target_path: Path) -> Path:
+        """Download a model atomically to ensure data integrity.
+        
+        Downloads to a temporary directory first, validates the download,
+        then atomically moves to the target location. This prevents partial
+        downloads or corrupted files from being left in the target location.
+        
+        Args:
+            provider: Provider name ('hf', 'ollama', etc.)
+            model_id: Model identifier
+            target_path: Final destination path for the model
+            
+        Returns:
+            Path: The final path where the model was successfully downloaded
+            
+        Raises:
+            Exception: If download fails, validation fails, or atomic move fails
+        """
+        # Validate model_id first
+        if not SecurityValidator.validate_model_id(provider, model_id):
+            raise SecurityException(f"Invalid model ID for provider {provider}: {model_id}")
+        
+        # Create a temporary directory with a unique name
+        safe_model_name = model_id.replace("/", "_").replace("\\", "_")
+        temp_dir = None
+        
+        try:
+            # Create temporary directory in the nvme path
+            temp_dir = tempfile.mkdtemp(
+                prefix='.tmp_',
+                suffix=f'_{safe_model_name}',
+                dir=self.nvme_path
+            )
+            temp_dir_path = Path(temp_dir)
+            logger.info(f"Created temporary directory for atomic download: {temp_dir_path}")
+            
+            # Get provider handler
+            from .models import get_provider_handler
+            handler = get_provider_handler(provider, self.config)
+            if not handler:
+                raise ValueError(f"Unknown provider: {provider}")
+            
+            # Check disk space before download
+            estimated_size = handler.estimate_model_size(model_id)
+            required_space = estimated_size * 2  # Need 2x space for download + move
+            
+            if not self.check_disk_space(required_space):
+                available_gb = self.get_disk_usage()['available_gb']
+                raise IOError(
+                    f"Insufficient disk space. Required: {required_space}GB, "
+                    f"Available: {available_gb}GB"
+                )
+            
+            # Download to temporary directory
+            logger.info(f"Downloading {model_id} to temporary location...")
+            temp_model_path = temp_dir_path / safe_model_name
+            
+            # Perform the download (provider-specific implementation)
+            success = handler.download_to_path(model_id, temp_model_path)
+            if not success:
+                raise RuntimeError(f"Download failed for {model_id}")
+            
+            # Validate the download by checking for expected files
+            logger.info(f"Validating download of {model_id}...")
+            if not self._validate_download(temp_model_path, provider, model_id):
+                raise ValueError(f"Download validation failed for {model_id}")
+            
+            # Ensure target directory exists
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Perform atomic move to target location
+            logger.info(f"Moving {model_id} to final location: {target_path}")
+            shutil.move(str(temp_model_path), str(target_path))
+            
+            logger.info(f"Successfully downloaded {model_id} to {target_path}")
+            return target_path
+            
+        except Exception as e:
+            logger.error(f"Atomic download failed for {model_id}: {e}")
+            # Clean up temporary directory on failure
+            if temp_dir and Path(temp_dir).exists():
+                logger.info(f"Cleaning up temporary directory: {temp_dir}")
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
+            raise
+        finally:
+            # Clean up temp directory if it still exists (in case of successful move)
+            if temp_dir and Path(temp_dir).exists():
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as cleanup_error:
+                    logger.debug(f"Could not remove temp directory {temp_dir}: {cleanup_error}")
+    
+    def _validate_download(self, model_path: Path, provider: str, model_id: str) -> bool:
+        """Validate that a model was downloaded successfully.
+        
+        Args:
+            model_path: Path where model was downloaded
+            provider: Provider name
+            model_id: Model identifier
+            
+        Returns:
+            bool: True if validation passes, False otherwise
+        """
+        # Check if path exists
+        if not model_path.exists():
+            logger.error(f"Download validation failed: {model_path} does not exist")
+            return False
+        
+        # Check if it's a directory or file based on provider expectations
+        if provider in ['hf', 'huggingface']:
+            # HuggingFace models are typically directories with multiple files
+            if not model_path.is_dir():
+                logger.error(f"Expected directory for HF model but got file: {model_path}")
+                return False
+            
+            # Check for common HF model files
+            expected_extensions = ['.safetensors', '.bin', '.json', '.txt']
+            found_files = list(model_path.rglob('*'))
+            
+            if not found_files:
+                logger.error(f"No files found in downloaded model directory: {model_path}")
+                return False
+            
+            # Check if we have at least one model file
+            model_files = [f for f in found_files 
+                          if any(str(f).endswith(ext) for ext in ['.safetensors', '.bin', '.gguf', '.pt'])]
+            
+            if not model_files:
+                logger.warning(f"No model weight files found in {model_path}")
+                # Don't fail validation - some models might have different structures
+            
+        elif provider == 'ollama':
+            # Ollama models might be single files or directories
+            if not model_path.exists():
+                logger.error(f"Ollama model not found at {model_path}")
+                return False
+        else:
+            # For unknown providers, just check existence
+            if not model_path.exists():
+                logger.error(f"Model not found at {model_path}")
+                return False
+        
+        # Check if the download is not empty
+        if model_path.is_file():
+            size = model_path.stat().st_size
+            if size == 0:
+                logger.error(f"Downloaded file is empty: {model_path}")
+                return False
+        elif model_path.is_dir():
+            # Check total size of directory
+            total_size = sum(f.stat().st_size for f in model_path.rglob('*') if f.is_file())
+            if total_size == 0:
+                logger.error(f"Downloaded directory is empty: {model_path}")
+                return False
+        
+        logger.info(f"Download validation passed for {model_id}")
+        return True
     
     def list_models(self) -> List[Dict]:
         """List all downloaded models.

@@ -1,8 +1,10 @@
 """Test cases for storage module."""
 
 import pytest
+import tempfile
+import shutil
 from pathlib import Path
-from unittest.mock import MagicMock, patch, Mock
+from unittest.mock import MagicMock, patch, Mock, call
 from nvme_models.storage import NVMeStorageManager, SecurityException
 from nvme_models.validators import SecurityValidator
 
@@ -137,3 +139,335 @@ class TestSafePathJoin:
         assert 'index 2' in error_msg  # Should indicate which component failed
         assert '../invalid' in error_msg  # Should show the problematic path
         assert 'path traversal' in error_msg.lower()  # Should explain the issue
+
+
+class TestDownloadAtomic:
+    """Test cases for the download_atomic method."""
+    
+    @pytest.fixture
+    def storage_manager(self):
+        """Create a storage manager instance for testing."""
+        config = {
+            'storage': {
+                'nvme_path': '/mnt/nvme',
+                'require_mount': False,
+                'min_free_space_gb': 50
+            }
+        }
+        return NVMeStorageManager(config)
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    @patch('nvme_models.storage.shutil.move')
+    @patch('nvme_models.storage.shutil.rmtree')
+    @patch('nvme_models.storage.Path.mkdir')
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_success(self, mock_validate_model, mock_mkdir, 
+                                    mock_rmtree, mock_move, mock_mkdtemp, 
+                                    storage_manager):
+        """Test successful atomic download with all steps."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        mock_mkdtemp.return_value = '/mnt/nvme/.tmp_abc_test_model'
+        
+        # Mock the provider handler
+        with patch('nvme_models.models.get_provider_handler') as mock_get_handler:
+            mock_handler = Mock()
+            mock_handler.estimate_model_size.return_value = 5  # 5GB
+            mock_handler.download_to_path.return_value = True
+            mock_get_handler.return_value = mock_handler
+            
+            # Mock disk space check
+            with patch.object(storage_manager, 'check_disk_space', return_value=True):
+                # Mock validation
+                with patch.object(storage_manager, '_validate_download', return_value=True):
+                    # Execute
+                    target_path = Path('/mnt/nvme/models/test_model')
+                    result = storage_manager.download_atomic('hf', 'test/model', target_path)
+                    
+                    # Verify
+                    assert result == target_path
+                    
+                    # Check tempfile.mkdtemp was called with correct parameters
+                    mock_mkdtemp.assert_called_once_with(
+                        prefix='.tmp_',
+                        suffix='_test_model',
+                        dir=Path('/mnt/nvme')
+                    )
+                    
+                    # Check download was attempted
+                    mock_handler.download_to_path.assert_called_once_with(
+                        'test/model',
+                        Path('/mnt/nvme/.tmp_abc_test_model/test_model')
+                    )
+                    
+                    # Check atomic move was performed
+                    mock_move.assert_called_once_with(
+                        '/mnt/nvme/.tmp_abc_test_model/test_model',
+                        str(target_path)
+                    )
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    @patch('nvme_models.storage.shutil.rmtree')
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_cleanup_on_download_failure(self, mock_validate_model,
+                                                         mock_rmtree, mock_mkdtemp,
+                                                         storage_manager):
+        """Test that temp directory is cleaned up when download fails."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        temp_dir = '/mnt/nvme/.tmp_failed_download'
+        mock_mkdtemp.return_value = temp_dir
+        
+        # Mock path exists for cleanup
+        with patch('nvme_models.storage.Path.exists', return_value=True):
+            # Mock the provider handler to fail download
+            with patch('nvme_models.models.get_provider_handler') as mock_get_handler:
+                mock_handler = Mock()
+                mock_handler.estimate_model_size.return_value = 5
+                mock_handler.download_to_path.return_value = False  # Download fails
+                mock_get_handler.return_value = mock_handler
+                
+                # Mock disk space check
+                with patch.object(storage_manager, 'check_disk_space', return_value=True):
+                    # Execute and expect failure
+                    target_path = Path('/mnt/nvme/models/failed_model')
+                    with pytest.raises(RuntimeError) as exc_info:
+                        storage_manager.download_atomic('hf', 'test/model', target_path)
+                    
+                    assert 'Download failed' in str(exc_info.value)
+                    
+                    # Verify temp directory was cleaned up
+                    mock_rmtree.assert_called_with(temp_dir)
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    @patch('nvme_models.storage.shutil.rmtree')
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_cleanup_on_validation_failure(self, mock_validate_model,
+                                                           mock_rmtree, mock_mkdtemp,
+                                                           storage_manager):
+        """Test that temp directory is cleaned up when validation fails."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        temp_dir = '/mnt/nvme/.tmp_invalid_download'
+        mock_mkdtemp.return_value = temp_dir
+        
+        # Mock path exists for cleanup
+        with patch('nvme_models.storage.Path.exists', return_value=True):
+            # Mock the provider handler
+            with patch('nvme_models.models.get_provider_handler') as mock_get_handler:
+                mock_handler = Mock()
+                mock_handler.estimate_model_size.return_value = 5
+                mock_handler.download_to_path.return_value = True  # Download succeeds
+                mock_get_handler.return_value = mock_handler
+                
+                # Mock disk space check
+                with patch.object(storage_manager, 'check_disk_space', return_value=True):
+                    # Mock validation to fail
+                    with patch.object(storage_manager, '_validate_download', return_value=False):
+                        # Execute and expect failure
+                        target_path = Path('/mnt/nvme/models/invalid_model')
+                        with pytest.raises(ValueError) as exc_info:
+                            storage_manager.download_atomic('hf', 'test/model', target_path)
+                        
+                        assert 'validation failed' in str(exc_info.value)
+                        
+                        # Verify temp directory was cleaned up
+                        mock_rmtree.assert_called_with(temp_dir)
+    
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_invalid_model_id(self, mock_validate_model, storage_manager):
+        """Test that invalid model IDs are rejected."""
+        # Setup mock to reject model ID
+        mock_validate_model.return_value = False
+        
+        # Execute and expect failure
+        target_path = Path('/mnt/nvme/models/malicious_model')
+        with pytest.raises(SecurityException) as exc_info:
+            storage_manager.download_atomic('hf', '../../../etc/passwd', target_path)
+        
+        assert 'Invalid model ID' in str(exc_info.value)
+        
+        # Verify validation was called
+        mock_validate_model.assert_called_once_with('hf', '../../../etc/passwd')
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_insufficient_disk_space(self, mock_validate_model,
+                                                     mock_mkdtemp, storage_manager):
+        """Test that download fails gracefully when disk space is insufficient."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        mock_mkdtemp.return_value = '/mnt/nvme/.tmp_no_space'
+        
+        # Mock the provider handler
+        with patch('nvme_models.models.get_provider_handler') as mock_get_handler:
+            mock_handler = Mock()
+            mock_handler.estimate_model_size.return_value = 100  # 100GB required
+            mock_get_handler.return_value = mock_handler
+            
+            # Mock disk space check to fail
+            with patch.object(storage_manager, 'check_disk_space', return_value=False):
+                with patch.object(storage_manager, 'get_disk_usage') as mock_usage:
+                    mock_usage.return_value = {'available_gb': 10}
+                    
+                    # Execute and expect failure
+                    target_path = Path('/mnt/nvme/models/large_model')
+                    with pytest.raises(IOError) as exc_info:
+                        storage_manager.download_atomic('hf', 'large/model', target_path)
+                    
+                    assert 'Insufficient disk space' in str(exc_info.value)
+                    assert '200GB' in str(exc_info.value)  # 100GB * 2
+                    assert '10GB' in str(exc_info.value)
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    @patch('nvme_models.storage.shutil.move')
+    @patch('nvme_models.storage.shutil.rmtree')
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_move_failure(self, mock_validate_model, mock_rmtree,
+                                          mock_move, mock_mkdtemp, storage_manager):
+        """Test that temp directory is cleaned up when atomic move fails."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        temp_dir = '/mnt/nvme/.tmp_move_fail'
+        mock_mkdtemp.return_value = temp_dir
+        
+        # Mock move to fail
+        mock_move.side_effect = OSError("Permission denied")
+        
+        # Mock path exists for cleanup
+        with patch('nvme_models.storage.Path.exists', return_value=True):
+            # Mock the provider handler
+            with patch('nvme_models.models.get_provider_handler') as mock_get_handler:
+                mock_handler = Mock()
+                mock_handler.estimate_model_size.return_value = 5
+                mock_handler.download_to_path.return_value = True
+                mock_get_handler.return_value = mock_handler
+                
+                # Mock disk space check
+                with patch.object(storage_manager, 'check_disk_space', return_value=True):
+                    # Mock validation
+                    with patch.object(storage_manager, '_validate_download', return_value=True):
+                        # Mock mkdir
+                        with patch('nvme_models.storage.Path.mkdir'):
+                            # Execute and expect failure
+                            target_path = Path('/mnt/nvme/models/unmovable_model')
+                            with pytest.raises(OSError) as exc_info:
+                                storage_manager.download_atomic('hf', 'test/model', target_path)
+                            
+                            assert 'Permission denied' in str(exc_info.value)
+                            
+                            # Verify temp directory cleanup was attempted
+                            mock_rmtree.assert_called_with(temp_dir)
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_unknown_provider(self, mock_validate_model,
+                                             mock_mkdtemp, storage_manager):
+        """Test that unknown providers are rejected."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        mock_mkdtemp.return_value = '/mnt/nvme/.tmp_unknown'
+        
+        # Mock the provider handler to return None (unknown provider)
+        with patch('nvme_models.models.get_provider_handler', return_value=None):
+            # Execute and expect failure
+            target_path = Path('/mnt/nvme/models/unknown_model')
+            with pytest.raises(ValueError) as exc_info:
+                storage_manager.download_atomic('unknown_provider', 'test/model', target_path)
+            
+            assert 'Unknown provider' in str(exc_info.value)
+    
+    def test_validate_download_nonexistent_path(self, storage_manager):
+        """Test validation fails for non-existent paths."""
+        # Create a mock path that doesn't exist
+        with patch('nvme_models.storage.Path.exists', return_value=False):
+            model_path = Path('/mnt/nvme/models/nonexistent')
+            result = storage_manager._validate_download(model_path, 'hf', 'test/model')
+            assert result is False
+    
+    def test_validate_download_hf_model_not_directory(self, storage_manager):
+        """Test validation fails when HF model is not a directory."""
+        model_path = Mock(spec=Path)
+        model_path.exists.return_value = True
+        model_path.is_dir.return_value = False
+        
+        result = storage_manager._validate_download(model_path, 'hf', 'test/model')
+        assert result is False
+    
+    def test_validate_download_hf_empty_directory(self, storage_manager):
+        """Test validation fails for empty HF model directory."""
+        model_path = Mock(spec=Path)
+        model_path.exists.return_value = True
+        model_path.is_dir.return_value = True
+        model_path.rglob.return_value = []  # Empty directory
+        
+        result = storage_manager._validate_download(model_path, 'hf', 'test/model')
+        assert result is False
+    
+    def test_validate_download_hf_with_files(self, storage_manager):
+        """Test validation passes for HF model with files."""
+        model_path = Mock(spec=Path)
+        model_path.exists.return_value = True
+        model_path.is_dir.return_value = True
+        
+        # Mock some files
+        mock_file1 = Mock()
+        mock_file1.is_file.return_value = True
+        mock_file1.stat.return_value.st_size = 1000
+        mock_file1.__str__ = lambda x: '/path/model.safetensors'
+        
+        mock_file2 = Mock()
+        mock_file2.is_file.return_value = True
+        mock_file2.stat.return_value.st_size = 500
+        mock_file2.__str__ = lambda x: '/path/config.json'
+        
+        model_path.rglob.return_value = [mock_file1, mock_file2]
+        
+        result = storage_manager._validate_download(model_path, 'hf', 'test/model')
+        assert result is True
+    
+    def test_validate_download_empty_file(self, storage_manager):
+        """Test validation fails for empty downloaded file."""
+        model_path = Mock(spec=Path)
+        model_path.exists.return_value = True
+        model_path.is_file.return_value = True
+        model_path.is_dir.return_value = False
+        model_path.stat.return_value.st_size = 0  # Empty file
+        
+        result = storage_manager._validate_download(model_path, 'ollama', 'test/model')
+        assert result is False
+    
+    def test_validate_download_non_empty_file(self, storage_manager):
+        """Test validation passes for non-empty file."""
+        model_path = Mock(spec=Path)
+        model_path.exists.return_value = True
+        model_path.is_file.return_value = True
+        model_path.is_dir.return_value = False
+        model_path.stat.return_value.st_size = 1000000  # Non-empty file
+        
+        result = storage_manager._validate_download(model_path, 'ollama', 'test/model')
+        assert result is True
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    def test_download_atomic_correct_temp_dir_naming(self, mock_mkdtemp, storage_manager):
+        """Test that temp directory is created with correct naming convention."""
+        # Setup mocks
+        with patch.object(SecurityValidator, 'validate_model_id', return_value=True):
+            with patch('nvme_models.models.get_provider_handler') as mock_get_handler:
+                mock_handler = Mock()
+                mock_handler.estimate_model_size.return_value = 5
+                mock_handler.download_to_path.side_effect = RuntimeError("Test")
+                mock_get_handler.return_value = mock_handler
+                
+                with patch.object(storage_manager, 'check_disk_space', return_value=True):
+                    # Test with model ID containing slashes
+                    target_path = Path('/mnt/nvme/models/test')
+                    with pytest.raises(RuntimeError):
+                        storage_manager.download_atomic('hf', 'meta-llama/Llama-2-7b', target_path)
+                    
+                    # Verify temp directory was created with sanitized name
+                    mock_mkdtemp.assert_called_once_with(
+                        prefix='.tmp_',
+                        suffix='_meta-llama_Llama-2-7b',
+                        dir=Path('/mnt/nvme')
+                    )
