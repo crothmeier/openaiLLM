@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 import logging
 
+from .validators import SecurityValidator
+
 logger = logging.getLogger(__name__)
+
+
+class SecurityException(Exception):
+    """Exception raised for security-related validation failures."""
+    pass
 
 
 class NVMeStorageManager:
@@ -24,6 +31,52 @@ class NVMeStorageManager:
         self.nvme_path = Path(config['storage']['nvme_path'])
         self.require_mount = config['storage'].get('require_mount', True)
         self.min_free_space_gb = config['storage'].get('min_free_space_gb', 50)
+    
+    def _safe_path_join(self, *parts: str) -> Path:
+        """Safely join path components with security validation.
+        
+        Args:
+            *parts: Path components to join
+            
+        Returns:
+            Path: Safely joined path
+            
+        Raises:
+            SecurityException: If any path component fails security validation
+        """
+        validated_parts = []
+        
+        for i, part in enumerate(parts):
+            # Convert to string if it's a Path object
+            part_str = str(part)
+            
+            # Skip validation for the base nvme_path if it's the first component
+            # since it's already validated during initialization
+            if i == 0 and part_str == str(self.nvme_path):
+                validated_parts.append(part_str)
+                continue
+            
+            # Validate each component for path traversal attempts
+            if not SecurityValidator.validate_path_traversal(part_str):
+                raise SecurityException(
+                    f"Path component at index {i} contains invalid pattern: '{part_str}'. "
+                    f"Detected potential path traversal or absolute path attempt."
+                )
+            
+            validated_parts.append(part_str)
+        
+        # Join the validated parts
+        if validated_parts:
+            # Start with the first part as the base
+            result_path = Path(validated_parts[0])
+            
+            # Join remaining parts
+            for part in validated_parts[1:]:
+                result_path = result_path / part
+            
+            return result_path
+        else:
+            raise SecurityException("No path components provided to join")
         
     def check_nvme_mounted(self) -> Tuple[bool, Optional[Dict[str, str]]]:
         """Check if NVMe is mounted at the configured path with detailed verification.
@@ -259,9 +312,9 @@ class NVMeStorageManager:
             
             # Create directory structure
             directories = [
-                self.nvme_path / 'hf-cache',
-                self.nvme_path / 'models',
-                self.nvme_path / 'ollama'
+                self._safe_path_join(self.nvme_path, 'hf-cache'),
+                self._safe_path_join(self.nvme_path, 'models'),
+                self._safe_path_join(self.nvme_path, 'ollama')
             ]
             
             for directory in directories:
@@ -283,10 +336,10 @@ class NVMeStorageManager:
     def _setup_environment_variables(self):
         """Set up environment variables for model caching."""
         env_vars = {
-            'HF_HOME': str(self.nvme_path / 'hf-cache'),
-            'TRANSFORMERS_CACHE': str(self.nvme_path / 'hf-cache'),
-            'HUGGINGFACE_HUB_CACHE': str(self.nvme_path / 'hf-cache'),
-            'OLLAMA_MODELS': str(self.nvme_path / 'ollama')
+            'HF_HOME': str(self._safe_path_join(self.nvme_path, 'hf-cache')),
+            'TRANSFORMERS_CACHE': str(self._safe_path_join(self.nvme_path, 'hf-cache')),
+            'HUGGINGFACE_HUB_CACHE': str(self._safe_path_join(self.nvme_path, 'hf-cache')),
+            'OLLAMA_MODELS': str(self._safe_path_join(self.nvme_path, 'ollama'))
         }
         
         # Update current environment
@@ -310,8 +363,8 @@ class NVMeStorageManager:
     def _create_symlinks(self):
         """Create symlinks for backward compatibility."""
         symlinks = [
-            (Path.home() / '.cache' / 'huggingface', self.nvme_path / 'hf-cache'),
-            (Path.home() / '.ollama', self.nvme_path / 'ollama')
+            (Path.home() / '.cache' / 'huggingface', self._safe_path_join(self.nvme_path, 'hf-cache')),
+            (Path.home() / '.ollama', self._safe_path_join(self.nvme_path, 'ollama'))
         ]
         
         for link_path, target_path in symlinks:
@@ -380,7 +433,7 @@ class NVMeStorageManager:
         directories = ['hf-cache', 'models', 'ollama']
         all_dirs_exist = True
         for dir_name in directories:
-            dir_path = self.nvme_path / dir_name
+            dir_path = self._safe_path_join(self.nvme_path, dir_name)
             if dir_path.exists():
                 size = self._get_dir_size(dir_path)
                 results['success'].append({
@@ -530,7 +583,7 @@ class NVMeStorageManager:
         models = []
         
         # List models in /mnt/nvme/models
-        models_dir = self.nvme_path / 'models'
+        models_dir = self._safe_path_join(self.nvme_path, 'models')
         if models_dir.exists():
             for model_path in models_dir.iterdir():
                 if model_path.is_dir() and not model_path.name.startswith('.'):
@@ -555,7 +608,7 @@ class NVMeStorageManager:
                     if parts:
                         models.append({
                             'name': parts[0],
-                            'path': str(self.nvme_path / 'ollama'),
+                            'path': str(self._safe_path_join(self.nvme_path, 'ollama')),
                             'size': parts[1] if len(parts) > 1 else 'unknown',
                             'provider': 'ollama'
                         })
