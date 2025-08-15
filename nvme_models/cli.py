@@ -41,10 +41,10 @@ def cli(ctx, config):
 
 
 @cli.command()
-@click.option('--verify-mount/--no-verify-mount', default=True, 
-              help='Verify NVMe is mounted before setup')
+@click.option('--no-verify-mount', is_flag=True, default=False,
+              help='Skip NVMe mount verification')
 @click.pass_context
-def setup(ctx, verify_mount):
+def setup(ctx, no_verify_mount):
     """Initialize NVMe storage for AI models.
     
     This command will:
@@ -55,9 +55,15 @@ def setup(ctx, verify_mount):
     storage = ctx.obj['storage']
     config = ctx.obj['config']
     
+    # Check if NVMe is mounted
+    if not no_verify_mount:
+        if not storage.check_nvme_mounted():
+            console.print('[red]Error: NVMe storage not mounted at /mnt/nvme[/red]')
+            sys.exit(1)
+    
     # Update config if needed
-    if not verify_mount:
-        config.set('storage', 'require_mount', False)
+    if no_verify_mount:
+        config.set('storage', 'require_mount', value=False)
     
     with console.status("[bold green]Setting up NVMe storage...") as status:
         try:
@@ -99,8 +105,10 @@ def setup(ctx, verify_mount):
               required=True, help='Model provider')
 @click.option('--revision', '-r', help='Model revision/branch (HuggingFace only)')
 @click.option('--token', '-t', help='Authentication token (HuggingFace only)')
+@click.option('--no-verify-mount', is_flag=True, default=False,
+              help='Skip NVMe mount verification')
 @click.pass_context
-def download(ctx, model_id, provider, revision, token):
+def download(ctx, model_id, provider, revision, token, no_verify_mount):
     """Download a model with validation.
     
     Examples:
@@ -114,6 +122,12 @@ def download(ctx, model_id, provider, revision, token):
     nvme-models download llama2:7b --provider ollama
     """
     storage = ctx.obj['storage']
+    
+    # Check if NVMe is mounted
+    if not no_verify_mount:
+        if not storage.check_nvme_mounted():
+            console.print('[red]Error: NVMe storage not mounted at /mnt/nvme[/red]')
+            sys.exit(1)
     
     # Normalize provider name
     if provider in ['hf', 'huggingface']:
@@ -181,8 +195,10 @@ def download(ctx, model_id, provider, revision, token):
 @click.option('--format', '-f', 
               type=click.Choice(['text', 'json'], case_sensitive=False),
               default='text', help='Output format')
+@click.option('--no-verify-mount', is_flag=True, default=False,
+              help='Skip NVMe mount verification')
 @click.pass_context
-def verify(ctx, format):
+def verify(ctx, format, no_verify_mount):
     """Verify NVMe storage configuration.
     
     Checks:
@@ -193,6 +209,12 @@ def verify(ctx, format):
     - Downloaded models
     """
     storage = ctx.obj['storage']
+    
+    # Check if NVMe is mounted
+    if not no_verify_mount:
+        if not storage.check_nvme_mounted():
+            console.print('[red]Error: NVMe storage not mounted at /mnt/nvme[/red]')
+            sys.exit(1)
     
     with console.status("[bold green]Verifying configuration...") as status:
         results = storage.verify(output_format=format)
@@ -278,17 +300,25 @@ def verify(ctx, format):
             sys.exit(1)
 
 
-@cli.command()
+@cli.command(name='list')
 @click.option('--provider', '-p', 
               type=click.Choice(['all', 'hf', 'huggingface', 'ollama', 'vllm'], case_sensitive=False),
               default='all', help='Filter by provider')
+@click.option('--no-verify-mount', is_flag=True, default=False,
+              help='Skip NVMe mount verification')
 @click.pass_context
-def list(ctx, provider):
+def list_models(ctx, provider, no_verify_mount):
     """List downloaded models.
     
     Shows all downloaded models with their sizes and providers.
     """
     storage = ctx.obj['storage']
+    
+    # Check if NVMe is mounted
+    if not no_verify_mount:
+        if not storage.check_nvme_mounted():
+            console.print('[red]Error: NVMe storage not mounted at /mnt/nvme[/red]')
+            sys.exit(1)
     
     # Get models from all providers
     all_models = []
@@ -349,16 +379,39 @@ def list(ctx, provider):
 
 @cli.command()
 @click.option('--yes', '-y', is_flag=True, help='Skip confirmation')
+@click.option('--no-verify-mount', is_flag=True, default=False,
+              help='Skip NVMe mount verification')
 @click.pass_context
-def clean(ctx, yes):
+def clean(ctx, yes, no_verify_mount):
     """Clean up temporary files and old backups.
     
     Removes:
     - Temporary download directories (.tmp_*)
     - Old backup files (*.backup.*)
     """
+    # Ensure storage and config are available from context
+    # The context should always be initialized by the parent cli group, 
+    # but we add defensive checks in case the command is called directly
+    if ctx.obj is None:
+        ctx.obj = {}
+    
+    if 'config' not in ctx.obj or ctx.obj['config'] is None:
+        from .config import load_config
+        ctx.obj['config'] = load_config(None)
+    
+    if 'storage' not in ctx.obj or ctx.obj['storage'] is None:
+        ctx.obj['storage'] = NVMeStorageManager(ctx.obj['config'].to_dict())
+    
     storage = ctx.obj['storage']
-    nvme_path = Path(ctx.obj['config'].get('storage', 'nvme_path'))
+    config = ctx.obj['config']
+    
+    # Check if NVMe is mounted
+    if not no_verify_mount:
+        if not storage.check_nvme_mounted():
+            console.print('[red]Error: NVMe storage not mounted at /mnt/nvme[/red]')
+            sys.exit(1)
+    
+    nvme_path = Path(config.get('storage', 'nvme_path'))
     
     # Find temporary files
     temp_files = list(nvme_path.rglob('.tmp_*'))
@@ -427,12 +480,22 @@ def clean(ctx, yes):
 @click.option('--provider', '-p', 
               type=click.Choice(['hf', 'huggingface', 'ollama', 'vllm'], case_sensitive=False),
               required=True, help='Model provider')
+@click.option('--no-verify-mount', is_flag=True, default=False,
+              help='Skip NVMe mount verification')
 @click.pass_context
-def info(ctx, model_name, provider):
+def info(ctx, model_name, provider, no_verify_mount):
     """Show detailed information about a model.
     
     Displays model configuration, size, and verification status.
     """
+    storage = ctx.obj['storage']
+    
+    # Check if NVMe is mounted
+    if not no_verify_mount:
+        if not storage.check_nvme_mounted():
+            console.print('[red]Error: NVMe storage not mounted at /mnt/nvme[/red]')
+            sys.exit(1)
+    
     # Normalize provider name
     if provider in ['hf', 'huggingface']:
         provider = 'hf'
