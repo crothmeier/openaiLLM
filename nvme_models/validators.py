@@ -405,3 +405,62 @@ class SecurityValidator:
             sanitized = 'unnamed'
         
         return sanitized
+    
+    @staticmethod
+    def validate_model_id(model_id: str, provider: str) -> Tuple[bool, str]:
+        """Validate model ID based on provider-specific patterns.
+        
+        Args:
+            model_id: Model identifier to validate
+            provider: Provider type ('huggingface' or 'ollama')
+            
+        Returns:
+            tuple: (is_valid, error_message) where error_message is empty if valid
+        """
+        # Check for empty model ID
+        if not model_id:
+            error_msg = "Model ID cannot be empty"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        # Check length constraint
+        if len(model_id) > 256:
+            error_msg = f"Model ID exceeds maximum length of 256 characters: {len(model_id)}"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        # Check for command injection attempts
+        dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r', '\0']
+        for char in dangerous_chars:
+            if char in model_id:
+                error_msg = f"Model ID contains dangerous character '{char}': potential command injection attempt"
+                logger.warning(f"Validation failed: {error_msg}")
+                return False, error_msg
+        
+        # Check for path traversal attempts
+        if '..' in model_id or model_id.startswith('/') or model_id.startswith('\\'):
+            error_msg = f"Model ID contains path traversal pattern: {model_id}"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        # Provider-specific validation
+        if provider.lower() == 'huggingface':
+            # HuggingFace pattern: organization/model-name
+            pattern = re.compile(r'^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$')
+            if not pattern.match(model_id):
+                error_msg = f"Invalid HuggingFace model ID format: {model_id}. Expected pattern: 'organization/model-name'"
+                logger.warning(f"Validation failed: {error_msg}")
+                return False, error_msg
+        elif provider.lower() == 'ollama':
+            # Ollama pattern: model-name or model-name:tag
+            pattern = re.compile(r'^[a-zA-Z0-9_-]+(:[a-zA-Z0-9._-]+)?$')
+            if not pattern.match(model_id):
+                error_msg = f"Invalid Ollama model ID format: {model_id}. Expected pattern: 'model-name' or 'model-name:tag'"
+                logger.warning(f"Validation failed: {error_msg}")
+                return False, error_msg
+        else:
+            error_msg = f"Unknown provider: {provider}. Supported providers: 'huggingface', 'ollama'"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        return True, ""

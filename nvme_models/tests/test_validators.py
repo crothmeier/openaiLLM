@@ -174,3 +174,128 @@ class TestSecurityValidator:
         once = SecurityValidator.sanitize_for_filesystem(original)
         twice = SecurityValidator.sanitize_for_filesystem(once)
         assert once == twice
+    
+    def test_validate_model_id(self):
+        """Test model ID validation for different providers."""
+        # Valid HuggingFace model IDs
+        assert SecurityValidator.validate_model_id("meta-llama/Llama-2-7b", "huggingface") == (True, "")
+        assert SecurityValidator.validate_model_id("microsoft/phi-2", "huggingface") == (True, "")
+        assert SecurityValidator.validate_model_id("google/flan-t5-xxl", "huggingface") == (True, "")
+        assert SecurityValidator.validate_model_id("stabilityai/stable-diffusion-xl-base-1.0", "huggingface") == (True, "")
+        assert SecurityValidator.validate_model_id("org_name/model.name", "huggingface") == (True, "")
+        assert SecurityValidator.validate_model_id("user-123/model_456", "huggingface") == (True, "")
+        
+        # Valid Ollama model IDs
+        assert SecurityValidator.validate_model_id("llama2", "ollama") == (True, "")
+        assert SecurityValidator.validate_model_id("llama2:7b", "ollama") == (True, "")
+        assert SecurityValidator.validate_model_id("mistral:latest", "ollama") == (True, "")
+        assert SecurityValidator.validate_model_id("codellama:13b-instruct", "ollama") == (True, "")
+        assert SecurityValidator.validate_model_id("model_name", "ollama") == (True, "")
+        assert SecurityValidator.validate_model_id("model-name:v1.0.0", "ollama") == (True, "")
+        
+        # Invalid patterns for HuggingFace
+        is_valid, error = SecurityValidator.validate_model_id("just-model-name", "huggingface")
+        assert is_valid is False
+        assert "Invalid HuggingFace model ID format" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("org/model/extra", "huggingface")
+        assert is_valid is False
+        assert "Invalid HuggingFace model ID format" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("org@name/model", "huggingface")
+        assert is_valid is False
+        assert "Invalid HuggingFace model ID format" in error
+        
+        # Invalid patterns for Ollama
+        is_valid, error = SecurityValidator.validate_model_id("model/name", "ollama")
+        assert is_valid is False
+        assert "Invalid Ollama model ID format" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("model:tag:extra", "ollama")
+        assert is_valid is False
+        assert "Invalid Ollama model ID format" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("model@name", "ollama")
+        assert is_valid is False
+        assert "Invalid Ollama model ID format" in error
+        
+        # Command injection attempts
+        is_valid, error = SecurityValidator.validate_model_id("model;rm -rf /", "huggingface")
+        assert is_valid is False
+        assert "dangerous character" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("model|cat /etc/passwd", "ollama")
+        assert is_valid is False
+        assert "dangerous character" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("model$(whoami)", "huggingface")
+        assert is_valid is False
+        assert "dangerous character" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("model`pwd`", "ollama")
+        assert is_valid is False
+        assert "dangerous character" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("model&echo hacked", "huggingface")
+        assert is_valid is False
+        assert "dangerous character" in error
+        
+        # Path traversal attempts
+        is_valid, error = SecurityValidator.validate_model_id("../../etc/passwd", "huggingface")
+        assert is_valid is False
+        assert "path traversal" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("../models/secret", "ollama")
+        assert is_valid is False
+        assert "path traversal" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("/etc/shadow", "huggingface")
+        assert is_valid is False
+        assert "path traversal" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("\\windows\\system32", "ollama")
+        assert is_valid is False
+        assert "path traversal" in error
+        
+        # Excessive length strings
+        long_id = "a" * 257
+        is_valid, error = SecurityValidator.validate_model_id(long_id, "huggingface")
+        assert is_valid is False
+        assert "exceeds maximum length" in error
+        
+        # Max valid length for HuggingFace (256 chars total)
+        max_valid = "a" * 127 + "/" + "b" * 128  # 256 chars total
+        assert SecurityValidator.validate_model_id(max_valid, "huggingface") == (True, "")
+        
+        # Max valid length for Ollama (256 chars total)
+        max_valid_ollama = "a" * 128 + ":" + "b" * 127  # 256 chars total
+        assert SecurityValidator.validate_model_id(max_valid_ollama, "ollama") == (True, "")
+        
+        # Empty model ID
+        is_valid, error = SecurityValidator.validate_model_id("", "huggingface")
+        assert is_valid is False
+        assert "cannot be empty" in error
+        
+        # Unknown provider
+        is_valid, error = SecurityValidator.validate_model_id("model/name", "unknown")
+        assert is_valid is False
+        assert "Unknown provider" in error
+        
+        # Case insensitive provider names
+        assert SecurityValidator.validate_model_id("meta-llama/Llama-2-7b", "HuggingFace") == (True, "")
+        assert SecurityValidator.validate_model_id("llama2:7b", "Ollama") == (True, "")
+        assert SecurityValidator.validate_model_id("meta-llama/Llama-2-7b", "HUGGINGFACE") == (True, "")
+        
+        # Newline and carriage return injection
+        is_valid, error = SecurityValidator.validate_model_id("model\nmalicious", "huggingface")
+        assert is_valid is False
+        assert "dangerous character" in error
+        
+        is_valid, error = SecurityValidator.validate_model_id("model\rmalicious", "ollama")
+        assert is_valid is False
+        assert "dangerous character" in error
+        
+        # Null byte injection
+        is_valid, error = SecurityValidator.validate_model_id("model\x00malicious", "huggingface")
+        assert is_valid is False
+        assert "dangerous character" in error
