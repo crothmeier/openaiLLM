@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Optional, List
 import logging
 
-from ..validators import Validator, ValidationError
+from ..validators import Validator, ValidationError, SecurityValidator
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,13 @@ class OllamaHandler:
         Returns:
             int: Estimated size in GB
         """
+        # Validate model name
+        try:
+            SecurityValidator.validate_model_id(model_name, provider='ollama')
+            logger.debug(f"Model name validation successful for: {model_name}")
+        except ValidationError as e:
+            logger.error(f"Model name validation failed for {model_name}: {e}")
+            raise
         # Ollama models are typically quantized, so smaller than raw weights
         model_lower = model_name.lower()
         
@@ -126,7 +133,15 @@ class OllamaHandler:
             bool: True if successful, False otherwise
         """
         try:
-            # Validate model name
+            # Validate model name with SecurityValidator
+            try:
+                SecurityValidator.validate_model_id(model_name, provider='ollama')
+                logger.debug(f"Model name validation successful for: {model_name}")
+            except ValidationError as e:
+                logger.error(f"Model name validation failed for {model_name}: {e}")
+                raise
+            
+            # Additional Ollama-specific validation
             Validator.validate_ollama_model(model_name)
             
             # Ensure Ollama service is running
@@ -243,6 +258,13 @@ class OllamaHandler:
         Returns:
             bool: True if successful, False otherwise
         """
+        # Validate model name
+        try:
+            SecurityValidator.validate_model_id(model_name, provider='ollama')
+            logger.debug(f"Model name validation successful for: {model_name}")
+        except ValidationError as e:
+            logger.error(f"Model name validation failed for {model_name}: {e}")
+            raise
         try:
             if not self.check_ollama_service():
                 logger.error("Ollama service is not running")
@@ -276,6 +298,13 @@ class OllamaHandler:
         Returns:
             str: Model output or None if failed
         """
+        # Validate model name
+        try:
+            SecurityValidator.validate_model_id(model_name, provider='ollama')
+            logger.debug(f"Model name validation successful for: {model_name}")
+        except ValidationError as e:
+            logger.error(f"Model name validation failed for {model_name}: {e}")
+            raise
         try:
             if not self.check_ollama_service():
                 logger.error("Ollama service is not running")
@@ -320,6 +349,13 @@ class OllamaHandler:
         Returns:
             Dict: Verification results
         """
+        # Validate model name
+        try:
+            SecurityValidator.validate_model_id(model_name, provider='ollama')
+            logger.debug(f"Model name validation successful for: {model_name}")
+        except ValidationError as e:
+            logger.error(f"Model name validation failed for {model_name}: {e}")
+            raise
         results = {
             'status': 'unknown',
             'checks': []

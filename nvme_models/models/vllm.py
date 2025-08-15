@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Optional, List
 import logging
 
-from ..validators import Validator, ValidationError
+from ..validators import Validator, ValidationError, SecurityValidator
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,13 @@ class VLLMHandler:
         Returns:
             int: Estimated size in GB
         """
+        # Validate model ID
+        try:
+            SecurityValidator.validate_model_id(model_id, provider='vllm')
+            logger.debug(f"Model ID validation successful for: {model_id}")
+        except ValidationError as e:
+            logger.error(f"Model ID validation failed for {model_id}: {e}")
+            raise
         # vLLM typically uses HuggingFace models
         return Validator.estimate_model_size(model_id, 'hf')
     
@@ -57,6 +64,13 @@ class VLLMHandler:
         Returns:
             bool: True if successful, False otherwise
         """
+        # Validate model ID
+        try:
+            SecurityValidator.validate_model_id(model_id, provider='vllm')
+            logger.debug(f"Model ID validation successful for: {model_id}")
+        except ValidationError as e:
+            logger.error(f"Model ID validation failed for {model_id}: {e}")
+            raise
         from .huggingface import HuggingFaceHandler
         
         # Create a temporary HF handler with vLLM paths
@@ -135,6 +149,13 @@ class VLLMHandler:
         Returns:
             Dict: Verification results
         """
+        # Validate model name
+        try:
+            SecurityValidator.validate_model_id(model_name, provider='vllm')
+            logger.debug(f"Model name validation successful for: {model_name}")
+        except ValidationError as e:
+            logger.error(f"Model name validation failed for {model_name}: {e}")
+            raise
         results = {
             'status': 'unknown',
             'checks': []
@@ -274,6 +295,13 @@ class VLLMHandler:
         Returns:
             Dict: vLLM server configuration
         """
+        # Validate model name
+        try:
+            SecurityValidator.validate_model_id(model_name, provider='vllm')
+            logger.debug(f"Model name validation successful for: {model_name}")
+        except ValidationError as e:
+            logger.error(f"Model name validation failed for {model_name}: {e}")
+            raise
         model_path = self.models_dir / model_name
         
         config = {
@@ -307,6 +335,13 @@ class VLLMHandler:
         Returns:
             bool: True if successful, False otherwise
         """
+        # Validate model name
+        try:
+            SecurityValidator.validate_model_id(model_name, provider='vllm')
+            logger.debug(f"Model name validation successful for: {model_name}")
+        except ValidationError as e:
+            logger.error(f"Model name validation failed for {model_name}: {e}")
+            raise
         try:
             deployment = {
                 'apiVersion': 'apps/v1',

@@ -9,7 +9,7 @@ from typing import Dict, Optional
 import logging
 import tempfile
 
-from ..validators import Validator, ValidationError
+from ..validators import Validator, ValidationError, SecurityValidator
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,13 @@ class HuggingFaceHandler:
         Returns:
             int: Estimated size in GB
         """
+        # Validate model ID
+        try:
+            SecurityValidator.validate_model_id(model_id, provider='huggingface')
+            logger.debug(f"Model ID validation successful for: {model_id}")
+        except ValidationError as e:
+            logger.error(f"Model ID validation failed for {model_id}: {e}")
+            raise
         try:
             # Try to get model info from HuggingFace API
             import requests
@@ -93,7 +100,15 @@ class HuggingFaceHandler:
             bool: True if successful, False otherwise
         """
         try:
-            # Validate model ID
+            # Validate model ID with SecurityValidator
+            try:
+                SecurityValidator.validate_model_id(model_id, provider='huggingface')
+                logger.debug(f"Model ID validation successful for: {model_id}")
+            except ValidationError as e:
+                logger.error(f"Model ID validation failed for {model_id}: {e}")
+                raise
+            
+            # Additional HuggingFace-specific validation
             Validator.validate_hf_model_id(model_id)
             
             # Sanitize model name for filesystem
@@ -150,11 +165,12 @@ class HuggingFaceHandler:
                 # Create model info file
                 info_file = target_dir / 'model_info.json'
                 with open(info_file, 'w') as f:
+                    import time
                     json.dump({
                         'model_id': model_id,
                         'revision': revision,
                         'provider': 'huggingface',
-                        'download_date': str(Path.ctime(target_dir))
+                        'download_date': time.ctime()
                     }, f, indent=2)
                 
                 logger.info(f"Successfully downloaded {model_id} to {target_dir}")
@@ -229,6 +245,13 @@ class HuggingFaceHandler:
         Returns:
             bool: True if successful, False otherwise
         """
+        # Validate model name
+        try:
+            SecurityValidator.validate_model_id(model_name, provider='huggingface')
+            logger.debug(f"Model name validation successful for: {model_name}")
+        except ValidationError as e:
+            logger.error(f"Model name validation failed for {model_name}: {e}")
+            raise
         try:
             model_path = self.models_dir / model_name
             
@@ -260,6 +283,13 @@ class HuggingFaceHandler:
         Returns:
             Dict: Verification results
         """
+        # Validate model name
+        try:
+            SecurityValidator.validate_model_id(model_name, provider='huggingface')
+            logger.debug(f"Model name validation successful for: {model_name}")
+        except ValidationError as e:
+            logger.error(f"Model name validation failed for {model_name}: {e}")
+            raise
         results = {
             'status': 'unknown',
             'checks': []
