@@ -1,1 +1,12 @@
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Test reports and artifacts
 .coverage
+results/
+test-outputs/
+
+# Local dependencies / builds
+llama.cpp/
