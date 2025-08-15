@@ -1,0 +1,73 @@
+# Gitleaks Configuration
+# https://github.com/gitleaks/gitleaks
+
+title = "Gitleaks Configuration for openaiLLM"
+version = "8.18.0"
+
+# Global allowlist configuration
+[allowlist]
+description = "Global allow list"
+# Exclude specific paths from scanning
+paths = [
+    # Test directories
+    '''test/.*''',
+    '''tests/.*''',
+    '''.*test.*''',
+    '''.*spec.*''',
+    '''__tests__/.*''',
+    
+    # Build and dependency directories
+    '''node_modules/.*''',
+    '''venv/.*''',
+    '''\.venv/.*''',
+    '''env/.*''',
+    '''\.env/.*''',
+    '''dist/.*''',
+    '''build/.*''',
+    
+    # Cache directories
+    '''\.pytest_cache/.*''',
+    '''__pycache__/.*''',
+    '''\.mypy_cache/.*''',
+    '''\.ruff_cache/.*''',
+    '''\.tox/.*''',
+    
+    # Coverage directories
+    '''htmlcov/.*''',
+    '''\.coverage.*''',
+    '''coverage/.*''',
+    
+    # Git directory
+    '''\.git/.*''',
+    
+    # Binary and data files
+    '''.*\.(pyc|pyo|pyd|so|dylib|dll|exe|bin|dat|db|sqlite|sqlite3|log|tmp|bak|swp|swo|DS_Store|jpg|jpeg|png|gif|pdf|zip|tar|gz|bz2|7z|rar)$''',
+    
+    # Lock files
+    '''package-lock\.json$''',
+    '''poetry\.lock$''',
+    '''Pipfile\.lock$''',
+    '''yarn\.lock$''',
+    '''pnpm-lock\.yaml$''',
+    '''composer\.lock$''',
+    
+    # Gitleaks output directory
+    '''gitleaks-output/.*''',
+    
+    # llama.cpp directory (if it exists)
+    '''llama\.cpp/.*''',
+]
+
+# Allow common test/mock patterns
+regexes = [
+    '''(?i)(test|fake|mock|example|sample|dummy|placeholder|demo)[_-]?(key|secret|password|token|api[_-]?key|credential)''',
+    '''\$\{\{\s*secrets\..*\}\}''',  # GitHub Actions secrets references
+]
+
+# Custom rules can be added here if needed in the future
+# Example:
+# [[rules]]
+# id = "custom-rule"
+# description = "Description of custom rule"
+# regex = '''pattern-to-match'''
+# tags = ["custom"]
