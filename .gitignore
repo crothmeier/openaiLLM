@@ -10,3 +10,6 @@ test-outputs/
 
 # Local dependencies / builds
 llama.cpp/
+.coverage
+.coverage.*
+htmlcov/
