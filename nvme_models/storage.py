@@ -25,21 +25,189 @@ class NVMeStorageManager:
         self.require_mount = config['storage'].get('require_mount', True)
         self.min_free_space_gb = config['storage'].get('min_free_space_gb', 50)
         
-    def check_nvme_mounted(self) -> bool:
-        """Check if NVMe is mounted at the configured path.
+    def check_nvme_mounted(self) -> Tuple[bool, Optional[Dict[str, str]]]:
+        """Check if NVMe is mounted at the configured path with detailed verification.
         
         Returns:
-            bool: True if mounted, False otherwise
+            Tuple[bool, Optional[Dict]]: (is_mounted, error_details)
+                - is_mounted: True if properly mounted NVMe, False otherwise
+                - error_details: Dict with error information if check fails, None if successful
         """
+        error_details = {}
+        
         try:
-            result = subprocess.run(
-                ['mountpoint', '-q', str(self.nvme_path)],
-                capture_output=True
-            )
-            return result.returncode == 0
+            # Step 1: Check if path exists
+            if not self.nvme_path.exists():
+                error_msg = f"Path does not exist: {self.nvme_path}"
+                logger.error(error_msg)
+                error_details['error'] = 'path_not_found'
+                error_details['message'] = error_msg
+                error_details['path'] = str(self.nvme_path)
+                return False, error_details
+            
+            # Step 2: Check if it's a directory
+            if not self.nvme_path.is_dir():
+                error_msg = f"Path exists but is not a directory: {self.nvme_path}"
+                logger.error(error_msg)
+                error_details['error'] = 'not_a_directory'
+                error_details['message'] = error_msg
+                error_details['path'] = str(self.nvme_path)
+                return False, error_details
+            
+            # Step 3: Check if it's actually mounted
+            try:
+                result = subprocess.run(
+                    ['mountpoint', '-q', str(self.nvme_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                
+                if result.returncode != 0:
+                    # Not a mount point - get more info
+                    mount_check = subprocess.run(
+                        ['mount'], 
+                        capture_output=True, 
+                        text=True,
+                        timeout=5
+                    )
+                    
+                    # Check if path appears in mount output
+                    is_mounted = str(self.nvme_path) in mount_check.stdout
+                    
+                    if not is_mounted:
+                        error_msg = f"Path exists but is not mounted: {self.nvme_path}"
+                        logger.warning(error_msg)
+                        error_details['error'] = 'not_mounted'
+                        error_details['message'] = error_msg
+                        error_details['path'] = str(self.nvme_path)
+                        # Don't return yet, check if it might be an NVMe device anyway
+                    
+            except subprocess.TimeoutExpired:
+                error_msg = "Mount check command timed out"
+                logger.error(error_msg)
+                error_details['error'] = 'mount_check_timeout'
+                error_details['message'] = error_msg
+                return False, error_details
+            except Exception as e:
+                error_msg = f"Failed to run mountpoint command: {e}"
+                logger.error(error_msg)
+                error_details['error'] = 'mount_check_failed'
+                error_details['message'] = error_msg
+                error_details['exception'] = str(e)
+                # Continue to device check anyway
+            
+            # Step 4: Verify it's an NVMe device
+            is_nvme = False
+            device_info = {}
+            
+            try:
+                # Get device for mount point
+                df_result = subprocess.run(
+                    ['df', str(self.nvme_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                
+                if df_result.returncode == 0:
+                    lines = df_result.stdout.strip().split('\n')
+                    if len(lines) > 1:
+                        # Extract device from df output
+                        device = lines[1].split()[0]
+                        device_info['device'] = device
+                        
+                        # Check if device is NVMe
+                        if 'nvme' in device.lower():
+                            is_nvme = True
+                            logger.info(f"Detected NVMe device from path: {device}")
+                        else:
+                            # Check /sys/block for NVMe indicators
+                            sys_block_path = Path('/sys/block')
+                            if sys_block_path.exists():
+                                for block_dev in sys_block_path.iterdir():
+                                    if 'nvme' in block_dev.name:
+                                        model_path = block_dev / 'device' / 'model'
+                                        if model_path.exists():
+                                            try:
+                                                model = model_path.read_text().strip()
+                                                device_info['model'] = model
+                                                # Check if this device is related to our mount
+                                                dev_path = f"/dev/{block_dev.name}"
+                                                if dev_path in device or device.startswith(dev_path):
+                                                    is_nvme = True
+                                                    logger.info(f"Found NVMe device: {block_dev.name} - Model: {model}")
+                                                    break
+                                            except Exception as e:
+                                                logger.debug(f"Could not read model for {block_dev.name}: {e}")
+                
+                if not is_nvme:
+                    # Try alternative method: check lsblk
+                    try:
+                        lsblk_result = subprocess.run(
+                            ['lsblk', '-o', 'NAME,TYPE,MOUNTPOINT', '-J'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        
+                        if lsblk_result.returncode == 0:
+                            import json
+                            lsblk_data = json.loads(lsblk_result.stdout)
+                            
+                            # Search for our mount point in the tree
+                            def find_mount(devices, mount_path):
+                                for device in devices:
+                                    if device.get('mountpoint') == str(mount_path):
+                                        return device
+                                    if 'children' in device:
+                                        found = find_mount(device['children'], mount_path)
+                                        if found:
+                                            return found
+                                return None
+                            
+                            mount_device = find_mount(lsblk_data.get('blockdevices', []), self.nvme_path)
+                            if mount_device and 'nvme' in mount_device.get('name', '').lower():
+                                is_nvme = True
+                                device_info['lsblk_device'] = mount_device.get('name')
+                                logger.info(f"Found NVMe device via lsblk: {mount_device.get('name')}")
+                    
+                    except Exception as e:
+                        logger.debug(f"Could not check lsblk: {e}")
+                
+            except subprocess.TimeoutExpired:
+                logger.warning("Device check timed out, assuming not NVMe")
+            except Exception as e:
+                logger.warning(f"Could not verify NVMe device: {e}")
+            
+            # Final determination
+            if result.returncode == 0 and is_nvme:
+                logger.info(f"Successfully verified NVMe mount at {self.nvme_path}")
+                return True, None
+            elif result.returncode == 0 and not is_nvme:
+                warning_msg = f"Path is mounted but not detected as NVMe device: {self.nvme_path}"
+                logger.warning(warning_msg)
+                error_details['warning'] = 'not_nvme_device'
+                error_details['message'] = warning_msg
+                error_details['device_info'] = device_info
+                # Return True if mounted (even if not confirmed NVMe)
+                return True, error_details
+            else:
+                # Not mounted
+                if not error_details:
+                    error_details['error'] = 'mount_verification_failed'
+                    error_details['message'] = f"Mount verification failed for {self.nvme_path}"
+                error_details['device_info'] = device_info
+                return False, error_details
+                
         except Exception as e:
-            logger.error(f"Failed to check mount status: {e}")
-            return False
+            error_msg = f"Unexpected error checking NVMe mount: {e}"
+            logger.error(error_msg)
+            error_details['error'] = 'unexpected_error'
+            error_details['message'] = error_msg
+            error_details['exception'] = str(type(e).__name__)
+            error_details['details'] = str(e)
+            return False, error_details
     
     def get_disk_usage(self) -> Dict[str, int]:
         """Get disk usage statistics for NVMe storage.
@@ -79,9 +247,15 @@ class NVMeStorageManager:
         """
         try:
             # Check if mounted if required
-            if self.require_mount and not self.check_nvme_mounted():
-                logger.error(f"NVMe not mounted at {self.nvme_path}")
-                return False
+            if self.require_mount:
+                is_mounted, error_details = self.check_nvme_mounted()
+                if not is_mounted:
+                    logger.error(f"NVMe not mounted at {self.nvme_path}")
+                    if error_details:
+                        logger.error(f"Mount check details: {error_details}")
+                    return False
+                elif error_details and 'warning' in error_details:
+                    logger.warning(f"Mount check warning: {error_details.get('message', 'Unknown warning')}")
             
             # Create directory structure
             directories = [
@@ -178,12 +352,28 @@ class NVMeStorageManager:
         }
         
         # Check mount status
-        if self.check_nvme_mounted():
-            results['success'].append({'check': 'mount', 'message': f'{self.nvme_path} is mounted'})
-            results['summary']['nvme_mounted'] = True
+        is_mounted, mount_details = self.check_nvme_mounted()
+        if is_mounted:
+            if mount_details and 'warning' in mount_details:
+                results['warnings'].append({
+                    'check': 'mount',
+                    'message': mount_details.get('message', 'Mount check had warnings'),
+                    'details': mount_details
+                })
+                results['summary']['nvme_mounted'] = True
+                results['summary']['mount_warning'] = mount_details.get('warning')
+            else:
+                results['success'].append({'check': 'mount', 'message': f'{self.nvme_path} is mounted as NVMe'})
+                results['summary']['nvme_mounted'] = True
         else:
-            results['errors'].append({'check': 'mount', 'message': f'{self.nvme_path} is not mounted'})
+            error_msg = mount_details.get('message', f'{self.nvme_path} is not mounted') if mount_details else f'{self.nvme_path} is not mounted'
+            results['errors'].append({
+                'check': 'mount',
+                'message': error_msg,
+                'details': mount_details
+            })
             results['summary']['nvme_mounted'] = False
+            results['summary']['mount_error'] = mount_details.get('error') if mount_details else 'unknown'
             results['status'] = 'error'
         
         # Check directories
