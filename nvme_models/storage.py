@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import fcntl
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 import logging
@@ -78,6 +79,62 @@ class NVMeStorageManager:
             return result_path
         else:
             raise SecurityException("No path components provided to join")
+    
+    def _acquire_lock(self) -> int:
+        """Acquire an exclusive lock for write operations.
+        
+        Opens a lock file and acquires a non-blocking exclusive lock.
+        
+        Returns:
+            int: File descriptor of the lock file
+            
+        Raises:
+            BlockingIOError: If lock cannot be acquired (another process holds it)
+            IOError: If lock file cannot be created
+        """
+        lock_file_path = self.nvme_path / '.nvme_models.lock'
+        
+        try:
+            # Open lock file (create if doesn't exist)
+            lock_fd = os.open(str(lock_file_path), os.O_CREAT | os.O_WRONLY, 0o644)
+            
+            # Try to acquire exclusive lock (non-blocking)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            
+            logger.debug(f"Acquired lock on {lock_file_path}")
+            return lock_fd
+            
+        except BlockingIOError:
+            # Lock is held by another process
+            logger.warning(f"Failed to acquire lock on {lock_file_path} - another operation in progress")
+            if 'lock_fd' in locals():
+                os.close(lock_fd)
+            raise BlockingIOError("Cannot acquire lock - another write operation is in progress")
+        except Exception as e:
+            logger.error(f"Error acquiring lock: {e}")
+            if 'lock_fd' in locals():
+                os.close(lock_fd)
+            raise IOError(f"Failed to acquire lock: {e}")
+    
+    def _release_lock(self, lock_fd: int):
+        """Release an exclusive lock.
+        
+        Args:
+            lock_fd: File descriptor of the lock file
+        """
+        try:
+            # Release the lock
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            # Close the file descriptor
+            os.close(lock_fd)
+            logger.debug("Released lock")
+        except Exception as e:
+            logger.warning(f"Error releasing lock: {e}")
+            # Still try to close the file descriptor
+            try:
+                os.close(lock_fd)
+            except:
+                pass
         
     def check_nvme_mounted(self) -> Tuple[bool, Optional[Dict[str, str]]]:
         """Check if NVMe is mounted at the configured path with detailed verification.
@@ -581,6 +638,7 @@ class NVMeStorageManager:
         Downloads to a temporary directory first, validates the download,
         then atomically moves to the target location. This prevents partial
         downloads or corrupted files from being left in the target location.
+        Uses file locking to prevent race conditions.
         
         Args:
             provider: Provider name ('hf', 'ollama', etc.)
@@ -592,16 +650,22 @@ class NVMeStorageManager:
             
         Raises:
             Exception: If download fails, validation fails, or atomic move fails
+            BlockingIOError: If another download is in progress
         """
         # Validate model_id first
         if not SecurityValidator.validate_model_id(provider, model_id):
             raise SecurityException(f"Invalid model ID for provider {provider}: {model_id}")
         
-        # Create a temporary directory with a unique name
-        safe_model_name = model_id.replace("/", "_").replace("\\", "_")
+        # Acquire lock before starting download
+        lock_fd = None
         temp_dir = None
         
         try:
+            # Acquire exclusive lock for write operation
+            lock_fd = self._acquire_lock()
+            
+            # Create a temporary directory with a unique name
+            safe_model_name = model_id.replace("/", "_").replace("\\", "_")
             # Create temporary directory in the nvme path
             temp_dir = tempfile.mkdtemp(
                 prefix='.tmp_',
@@ -663,6 +727,10 @@ class NVMeStorageManager:
                     logger.warning(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
             raise
         finally:
+            # Always release the lock
+            if lock_fd is not None:
+                self._release_lock(lock_fd)
+            
             # Clean up temp directory if it still exists (in case of successful move)
             if temp_dir and Path(temp_dir).exists():
                 try:

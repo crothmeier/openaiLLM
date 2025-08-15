@@ -3,6 +3,8 @@
 import pytest
 import tempfile
 import shutil
+import fcntl
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch, Mock, call
 from nvme_models.storage import NVMeStorageManager, SecurityException
@@ -471,3 +473,242 @@ class TestDownloadAtomic:
                         suffix='_meta-llama_Llama-2-7b',
                         dir=Path('/mnt/nvme')
                     )
+
+
+class TestFileLocking:
+    """Test cases for file locking mechanism in storage operations."""
+    
+    @pytest.fixture
+    def storage_manager(self):
+        """Create a storage manager instance for testing."""
+        config = {
+            'storage': {
+                'nvme_path': '/mnt/nvme',
+                'require_mount': False,
+                'min_free_space_gb': 50
+            }
+        }
+        return NVMeStorageManager(config)
+    
+    @patch('nvme_models.storage.fcntl.flock')
+    @patch('nvme_models.storage.os.open')
+    def test_acquire_lock_success(self, mock_open, mock_flock, storage_manager):
+        """Test successful lock acquisition."""
+        # Setup mocks
+        mock_fd = 42
+        mock_open.return_value = mock_fd
+        mock_flock.return_value = None  # Success
+        
+        # Execute
+        result_fd = storage_manager._acquire_lock()
+        
+        # Verify
+        assert result_fd == mock_fd
+        
+        # Check lock file was opened correctly
+        mock_open.assert_called_once_with(
+            '/mnt/nvme/.nvme_models.lock',
+            os.O_CREAT | os.O_WRONLY,
+            0o644
+        )
+        
+        # Check exclusive non-blocking lock was requested
+        mock_flock.assert_called_once_with(mock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    
+    @patch('nvme_models.storage.os.close')
+    @patch('nvme_models.storage.fcntl.flock')
+    @patch('nvme_models.storage.os.open')
+    def test_acquire_lock_blocking_error(self, mock_open, mock_flock, mock_close, storage_manager):
+        """Test that BlockingIOError is raised when lock is already held."""
+        # Setup mocks
+        mock_fd = 42
+        mock_open.return_value = mock_fd
+        mock_flock.side_effect = BlockingIOError("Resource temporarily unavailable")
+        
+        # Execute and verify exception
+        with pytest.raises(BlockingIOError) as exc_info:
+            storage_manager._acquire_lock()
+        
+        assert "another write operation is in progress" in str(exc_info.value)
+        
+        # Verify file descriptor was closed
+        mock_close.assert_called_once_with(mock_fd)
+    
+    @patch('nvme_models.storage.os.close')
+    @patch('nvme_models.storage.fcntl.flock')
+    @patch('nvme_models.storage.os.open')
+    def test_acquire_lock_general_error(self, mock_open, mock_flock, mock_close, storage_manager):
+        """Test that IOError is raised for general lock failures."""
+        # Setup mocks
+        mock_fd = 42
+        mock_open.return_value = mock_fd
+        mock_flock.side_effect = OSError("Permission denied")
+        
+        # Execute and verify exception
+        with pytest.raises(IOError) as exc_info:
+            storage_manager._acquire_lock()
+        
+        assert "Failed to acquire lock" in str(exc_info.value)
+        
+        # Verify file descriptor was closed
+        mock_close.assert_called_once_with(mock_fd)
+    
+    @patch('nvme_models.storage.os.close')
+    @patch('nvme_models.storage.fcntl.flock')
+    def test_release_lock_success(self, mock_flock, mock_close, storage_manager):
+        """Test successful lock release."""
+        # Setup
+        mock_fd = 42
+        
+        # Execute
+        storage_manager._release_lock(mock_fd)
+        
+        # Verify
+        mock_flock.assert_called_once_with(mock_fd, fcntl.LOCK_UN)
+        mock_close.assert_called_once_with(mock_fd)
+    
+    @patch('nvme_models.storage.os.close')
+    @patch('nvme_models.storage.fcntl.flock')
+    def test_release_lock_with_error_still_closes_fd(self, mock_flock, mock_close, storage_manager):
+        """Test that file descriptor is closed even if unlock fails."""
+        # Setup
+        mock_fd = 42
+        mock_flock.side_effect = OSError("Failed to unlock")
+        
+        # Execute (should not raise)
+        storage_manager._release_lock(mock_fd)
+        
+        # Verify close was still attempted
+        mock_close.assert_called_once_with(mock_fd)
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    @patch('nvme_models.storage.shutil.move')
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_with_lock_acquisition_and_release(self, mock_validate_model,
+                                                               mock_move, mock_mkdtemp,
+                                                               storage_manager):
+        """Test that lock is acquired at start and released in finally block."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        mock_mkdtemp.return_value = '/mnt/nvme/.tmp_test'
+        mock_lock_fd = 42
+        
+        with patch.object(storage_manager, '_acquire_lock', return_value=mock_lock_fd) as mock_acquire:
+            with patch.object(storage_manager, '_release_lock') as mock_release:
+                with patch('nvme_models.models.get_provider_handler') as mock_get_handler:
+                    mock_handler = Mock()
+                    mock_handler.estimate_model_size.return_value = 5
+                    mock_handler.download_to_path.return_value = True
+                    mock_get_handler.return_value = mock_handler
+                    
+                    with patch.object(storage_manager, 'check_disk_space', return_value=True):
+                        with patch.object(storage_manager, '_validate_download', return_value=True):
+                            with patch('nvme_models.storage.Path.mkdir'):
+                                with patch('nvme_models.storage.Path.exists', return_value=False):
+                                    # Execute
+                                    target_path = Path('/mnt/nvme/models/test')
+                                    result = storage_manager.download_atomic('hf', 'test/model', target_path)
+                                    
+                                    # Verify lock was acquired
+                                    mock_acquire.assert_called_once()
+                                    
+                                    # Verify lock was released
+                                    mock_release.assert_called_once_with(mock_lock_fd)
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_releases_lock_on_exception(self, mock_validate_model,
+                                                        mock_mkdtemp, storage_manager):
+        """Test that lock is always released in finally block even on exception."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        mock_mkdtemp.return_value = '/mnt/nvme/.tmp_failed'
+        mock_lock_fd = 42
+        
+        with patch.object(storage_manager, '_acquire_lock', return_value=mock_lock_fd) as mock_acquire:
+            with patch.object(storage_manager, '_release_lock') as mock_release:
+                with patch('nvme_models.models.get_provider_handler') as mock_get_handler:
+                    # Make download fail
+                    mock_handler = Mock()
+                    mock_handler.estimate_model_size.return_value = 5
+                    mock_handler.download_to_path.side_effect = RuntimeError("Download failed")
+                    mock_get_handler.return_value = mock_handler
+                    
+                    with patch.object(storage_manager, 'check_disk_space', return_value=True):
+                        with patch('nvme_models.storage.Path.exists', return_value=True):
+                            with patch('nvme_models.storage.shutil.rmtree'):
+                                # Execute and expect failure
+                                target_path = Path('/mnt/nvme/models/test')
+                                with pytest.raises(RuntimeError):
+                                    storage_manager.download_atomic('hf', 'test/model', target_path)
+                                
+                                # Verify lock was acquired
+                                mock_acquire.assert_called_once()
+                                
+                                # Verify lock was still released despite exception
+                                mock_release.assert_called_once_with(mock_lock_fd)
+    
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_concurrent_lock_failure(self, mock_validate_model, storage_manager):
+        """Test that concurrent download attempts fail with BlockingIOError."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        
+        # Make lock acquisition fail with BlockingIOError
+        with patch.object(storage_manager, '_acquire_lock') as mock_acquire:
+            mock_acquire.side_effect = BlockingIOError("Cannot acquire lock - another write operation is in progress")
+            
+            # Execute and expect BlockingIOError
+            target_path = Path('/mnt/nvme/models/test')
+            with pytest.raises(BlockingIOError) as exc_info:
+                storage_manager.download_atomic('hf', 'test/model', target_path)
+            
+            assert "another write operation is in progress" in str(exc_info.value)
+            
+            # Verify lock acquisition was attempted
+            mock_acquire.assert_called_once()
+    
+    @patch('nvme_models.storage.tempfile.mkdtemp')
+    @patch.object(SecurityValidator, 'validate_model_id')
+    def test_download_atomic_no_lock_release_if_not_acquired(self, mock_validate_model,
+                                                             mock_mkdtemp, storage_manager):
+        """Test that lock release is not attempted if lock was never acquired."""
+        # Setup mocks
+        mock_validate_model.return_value = True
+        
+        # Make lock acquisition fail immediately
+        with patch.object(storage_manager, '_acquire_lock') as mock_acquire:
+            mock_acquire.side_effect = IOError("Cannot create lock file")
+            
+            with patch.object(storage_manager, '_release_lock') as mock_release:
+                # Execute and expect failure
+                target_path = Path('/mnt/nvme/models/test')
+                with pytest.raises(IOError):
+                    storage_manager.download_atomic('hf', 'test/model', target_path)
+                
+                # Verify lock release was NOT called (since lock_fd would be None)
+                mock_release.assert_not_called()
+    
+    @patch('nvme_models.storage.os.open')
+    def test_acquire_lock_creates_lock_file(self, mock_open, storage_manager, tmp_path):
+        """Test that lock file is created with correct permissions."""
+        # Use a real temp directory for this test
+        storage_manager.nvme_path = tmp_path
+        lock_file_path = tmp_path / '.nvme_models.lock'
+        
+        # Setup mock to simulate successful lock
+        mock_fd = 42
+        mock_open.return_value = mock_fd
+        
+        with patch('nvme_models.storage.fcntl.flock'):
+            # Execute
+            result_fd = storage_manager._acquire_lock()
+            
+            # Verify open was called with correct parameters
+            mock_open.assert_called_once_with(
+                str(lock_file_path),
+                os.O_CREAT | os.O_WRONLY,
+                0o644
+            )
+            
+            assert result_fd == mock_fd
