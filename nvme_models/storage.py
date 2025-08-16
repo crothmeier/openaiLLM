@@ -34,6 +34,25 @@ class NVMeStorageManager:
         self.require_mount = config['storage'].get('require_mount', True)
         self.min_free_space_gb = config['storage'].get('min_free_space_gb', 50)
     
+    def _validate_path_boundary(self, path: Path, base: Path) -> bool:
+        """Validate that a path stays within base directory after resolution.
+        
+        Args:
+            path: Path to validate
+            base: Base directory that path must be within
+            
+        Returns:
+            bool: True if path is within base, False otherwise
+        """
+        try:
+            resolved_path = path.resolve()
+            resolved_base = base.resolve()
+            # Python 3.9+ has is_relative_to, for older versions use string comparison
+            return str(resolved_path).startswith(str(resolved_base) + os.sep) or resolved_path == resolved_base
+        except (OSError, RuntimeError) as e:
+            logger.error(f"Path resolution failed: {e}")
+            return False
+    
     def _safe_path_join(self, *parts: str) -> Path:
         """Safely join path components with security validation.
         
@@ -75,6 +94,12 @@ class NVMeStorageManager:
             # Join remaining parts
             for part in validated_parts[1:]:
                 result_path = result_path / part
+            
+            # Validate the final path stays within base
+            if not self._validate_path_boundary(result_path, self.nvme_path):
+                raise SecurityException(
+                    f"Path escapes base directory after resolution: {result_path}"
+                )
             
             return result_path
         else:
@@ -133,7 +158,7 @@ class NVMeStorageManager:
             # Still try to close the file descriptor
             try:
                 os.close(lock_fd)
-            except:
+            except OSError:
                 pass
         
     def check_nvme_mounted(self) -> Tuple[bool, Optional[Dict[str, str]]]:
@@ -171,7 +196,8 @@ class NVMeStorageManager:
                     ['mountpoint', '-q', str(self.nvme_path)],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    check=False  # We check returncode manually
                 )
                 
                 if result.returncode != 0:
@@ -180,7 +206,8 @@ class NVMeStorageManager:
                         ['mount'], 
                         capture_output=True, 
                         text=True,
-                        timeout=5
+                        timeout=5,
+                        check=False
                     )
                     
                     # Check if path appears in mount output
@@ -218,7 +245,8 @@ class NVMeStorageManager:
                     ['df', str(self.nvme_path)],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    check=False
                 )
                 
                 if df_result.returncode == 0:
@@ -259,7 +287,8 @@ class NVMeStorageManager:
                             ['lsblk', '-o', 'NAME,TYPE,MOUNTPOINT', '-J'],
                             capture_output=True,
                             text=True,
-                            timeout=5
+                            timeout=5,
+                            check=False
                         )
                         
                         if lsblk_result.returncode == 0:
@@ -392,7 +421,10 @@ class NVMeStorageManager:
             return False
     
     def _setup_environment_variables(self):
-        """Set up environment variables for model caching."""
+        """Set up environment variables for model caching.
+        
+        Note: Does not modify ~/.bashrc to respect systemd sandboxing.
+        """
         env_vars = {
             'HF_HOME': str(self._safe_path_join(self.nvme_path, 'hf-cache')),
             'TRANSFORMERS_CACHE': str(self._safe_path_join(self.nvme_path, 'hf-cache')),
@@ -405,18 +437,24 @@ class NVMeStorageManager:
             os.environ[key] = value
             logger.info(f"Set {key}={value}")
         
-        # Update ~/.bashrc
-        bashrc_path = Path.home() / '.bashrc'
-        if bashrc_path.exists():
-            with open(bashrc_path, 'r') as f:
-                content = f.read()
-            
-            for key, value in env_vars.items():
-                export_line = f'export {key}={value}'
-                if export_line not in content:
-                    with open(bashrc_path, 'a') as f:
-                        f.write(f'\n{export_line}')
-                    logger.info(f"Added {key} to ~/.bashrc")
+        # Write to environment file for systemd if configured
+        env_file_path = os.environ.get('NVME_MODELS_ENV_FILE')
+        if env_file_path:
+            try:
+                env_file = Path(env_file_path)
+                # Validate path is safe
+                if not self._validate_path_boundary(env_file, Path('/etc')):
+                    logger.warning(f"Environment file path outside /etc: {env_file_path}")
+                    return
+                
+                with open(env_file, 'w') as f:
+                    for key, value in env_vars.items():
+                        f.write(f'{key}={value}\n')
+                logger.info(f"Wrote environment variables to {env_file_path}")
+            except Exception as e:
+                logger.warning(f"Could not write environment file: {e}")
+        else:
+            logger.info("No NVME_MODELS_ENV_FILE configured, skipping persistent env setup")
     
     def _create_symlinks(self):
         """Create symlinks for backward compatibility."""
@@ -429,6 +467,11 @@ class NVMeStorageManager:
             try:
                 # Create parent directory if needed
                 link_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Validate symlink target stays within base
+                if not self._validate_path_boundary(target_path, self.nvme_path):
+                    logger.warning(f"Skipping symlink with target outside base: {target_path}")
+                    continue
                 
                 # Remove existing file/directory if it exists
                 if link_path.exists() and not link_path.is_symlink():
@@ -578,12 +621,14 @@ class NVMeStorageManager:
             result = subprocess.run(
                 ['du', '-sh', str(path)],
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=30,
+                check=False
             )
             if result.returncode == 0:
                 return result.stdout.split()[0]
-        except:
-            pass
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+            logger.debug(f"Failed to get directory size: {e}")
         return 'unknown'
     
     def _count_model_files(self) -> int:
@@ -598,8 +643,8 @@ class NVMeStorageManager:
         try:
             for ext in extensions:
                 count += len(list(self.nvme_path.rglob(f'*{ext}')))
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Error counting model files: {e}")
         
         return count
     
@@ -632,6 +677,43 @@ class NVMeStorageManager:
         
         return handler.download(model_id, **kwargs)
     
+    def _reserve_disk_space(self, size_gb: int) -> Optional[Path]:
+        """Reserve disk space by creating a sparse file.
+        
+        Args:
+            size_gb: Size to reserve in GB
+            
+        Returns:
+            Path to reservation file, or None if failed
+        """
+        try:
+            reserve_file = self.nvme_path / f'.space_reserve_{os.getpid()}'
+            size_bytes = size_gb * (1024 ** 3)
+            
+            # Create sparse file
+            with open(reserve_file, 'wb') as f:
+                f.seek(size_bytes - 1)
+                f.write(b'\0')
+            
+            # Verify space is actually available
+            usage = self.get_disk_usage()
+            if usage['available_gb'] < self.min_free_space_gb:
+                reserve_file.unlink()
+                return None
+            
+            return reserve_file
+        except Exception as e:
+            logger.error(f"Failed to reserve disk space: {e}")
+            return None
+    
+    def _release_disk_reservation(self, reserve_file: Path):
+        """Release disk space reservation."""
+        try:
+            if reserve_file and reserve_file.exists():
+                reserve_file.unlink()
+        except Exception as e:
+            logger.debug(f"Failed to release reservation: {e}")
+    
     def download_atomic(self, provider: str, model_id: str, target_path: Path) -> Path:
         """Download a model atomically to ensure data integrity.
         
@@ -659,6 +741,7 @@ class NVMeStorageManager:
         # Acquire lock before starting download
         lock_fd = None
         temp_dir = None
+        reserve_file = None
         
         try:
             # Acquire exclusive lock for write operation
@@ -685,7 +768,9 @@ class NVMeStorageManager:
             estimated_size = handler.estimate_model_size(model_id)
             required_space = estimated_size * 2  # Need 2x space for download + move
             
-            if not self.check_disk_space(required_space):
+            # Reserve disk space
+            reserve_file = self._reserve_disk_space(required_space)
+            if not reserve_file:
                 available_gb = self.get_disk_usage()['available_gb']
                 raise IOError(
                     f"Insufficient disk space. Required: {required_space}GB, "
@@ -709,6 +794,10 @@ class NVMeStorageManager:
             # Ensure target directory exists
             target_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # Validate target path stays within base
+            if not self._validate_path_boundary(target_path, self.nvme_path):
+                raise SecurityException(f"Target path escapes base directory: {target_path}")
+            
             # Perform atomic move to target location
             logger.info(f"Moving {model_id} to final location: {target_path}")
             shutil.move(str(temp_model_path), str(target_path))
@@ -727,6 +816,9 @@ class NVMeStorageManager:
                     logger.warning(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
             raise
         finally:
+            # Release disk space reservation
+            if reserve_file:
+                self._release_disk_reservation(reserve_file)
             # Always release the lock
             if lock_fd is not None:
                 self._release_lock(lock_fd)
@@ -829,7 +921,9 @@ class NVMeStorageManager:
             result = subprocess.run(
                 ['ollama', 'list'],
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=30,
+                check=False
             )
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')[1:]  # Skip header
@@ -842,7 +936,7 @@ class NVMeStorageManager:
                             'size': parts[1] if len(parts) > 1 else 'unknown',
                             'provider': 'ollama'
                         })
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to list Ollama models: {e}")
         
         return models

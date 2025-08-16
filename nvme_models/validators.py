@@ -4,6 +4,7 @@ import re
 import os
 from pathlib import Path
 from typing import Optional, Tuple
+import subprocess
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,32 @@ logger = logging.getLogger(__name__)
 class ValidationError(Exception):
     """Custom exception for validation errors."""
     pass
+
+
+def safe_exec(cmd: list, timeout: int = 30, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    """Execute subprocess with safety constraints.
+    
+    Args:
+        cmd: Command list to execute
+        timeout: Timeout in seconds (default 30)
+        check: Whether to check return code
+        **kwargs: Additional subprocess.run arguments
+        
+    Returns:
+        CompletedProcess instance
+        
+    Raises:
+        subprocess.TimeoutExpired: If command times out
+        subprocess.CalledProcessError: If check=True and command fails
+    """
+    return subprocess.run(
+        cmd,
+        timeout=timeout,
+        check=check,
+        capture_output=True,
+        text=True,
+        **kwargs
+    )
 
 
 class Validator:
@@ -97,6 +124,13 @@ class Validator:
         except Exception as e:
             raise ValidationError(f"Invalid path: {path} - {e}")
         
+        # Check for null bytes and control characters
+        if '\0' in str(path):
+            raise ValidationError(f"Path contains null byte: {path}")
+        
+        # Normalize and resolve symlinks
+        validated_path = validated_path.resolve()
+        
         # Check if path exists (for read operations)
         # Note: We don't check existence for write operations
         
@@ -104,7 +138,13 @@ class Validator:
         if base_path:
             try:
                 base = Path(base_path).resolve()
-                if not str(validated_path).startswith(str(base)):
+                # Use is_relative_to for Python 3.9+, fallback to string comparison
+                try:
+                    is_within = validated_path.is_relative_to(base)
+                except AttributeError:
+                    # Python < 3.9 fallback
+                    is_within = str(validated_path).startswith(str(base) + os.sep) or validated_path == base
+                if not is_within:
                     raise ValidationError(
                         f"Path {validated_path} is outside allowed base path {base}"
                     )
@@ -430,16 +470,29 @@ class SecurityValidator:
             return False, error_msg
         
         # Check for command injection attempts
-        dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r', '\0']
+        dangerous_chars = [
+            ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', 
+            '\n', '\r', '\0', '\x00', '\x1a', '\x1b'
+        ]
         for char in dangerous_chars:
             if char in model_id:
-                error_msg = f"Model ID contains dangerous character '{char}': potential command injection attempt"
+                char_repr = repr(char) if ord(char) < 32 else char
+                error_msg = (
+                    f"Model ID contains dangerous character {char_repr}: "
+                    f"potential command injection attempt"
+                )
                 logger.warning(f"Validation failed: {error_msg}")
                 return False, error_msg
         
         # Check for path traversal attempts
         if '..' in model_id or model_id.startswith('/') or model_id.startswith('\\'):
             error_msg = f"Model ID contains path traversal pattern: {model_id}"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        # Check for URL schemes that could be malicious
+        if any(scheme in model_id.lower() for scheme in ['http://', 'https://', 'ftp://', 'file://']):
+            error_msg = f"Model ID contains URL scheme: {model_id}"
             logger.warning(f"Validation failed: {error_msg}")
             return False, error_msg
         

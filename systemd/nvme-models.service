@@ -1,0 +1,47 @@
+[Unit]
+Description=NVMe Model Storage Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/mnt/nvme
+
+# Environment configuration
+EnvironmentFile=/etc/nvme-models/environment
+Environment="NVME_MODELS_ENV_FILE=/etc/nvme-models/runtime.env"
+
+# Security hardening
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource limits
+LimitNOFILE=65536
+TasksMax=128
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nvme-models
+
+ExecStart=/usr/local/bin/nvme-models-server
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
