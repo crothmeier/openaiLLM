@@ -13,3 +13,6 @@ llama.cpp/
 .coverage
 .coverage.*
 htmlcov/
+build/
+*.o
+*.so
