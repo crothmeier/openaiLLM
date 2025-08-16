@@ -1,18 +1,71 @@
-# Python cache
+# Python
 __pycache__/
+*.py[cod]
 *.pyc
+.Python
+build/
+dist/
+*.egg-info/
 .pytest_cache/
-
-# Test reports and artifacts
-.coverage
-results/
-test-outputs/
-
-# Local dependencies / builds
-llama.cpp/
+htmlcov/
 .coverage
 .coverage.*
-htmlcov/
-build/
-*.o
-*.so
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.claude/
+
+# External repositories (not part of this repo)
+llama.cpp/
+
+# Test outputs and results
+results/
+test-outputs/
+.benchmarks/
+
+# Archive directory
+/archive/
+
+# Model files (too large)
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.onnx
+
+# Large files
+*.zip
+*.tar
+*.tar.gz
+
+# Backup files
+*.backup
+*.bak
+*-old.*
+*.orig
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Project specific
+/mnt/nvme/
