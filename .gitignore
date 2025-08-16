@@ -69,3 +69,10 @@ temp/
 
 # Project specific
 /mnt/nvme/
+
+# Audit session logs (contain terminal control chars)
+audit/*/claude_session.txt
+
+# Audit session logs
+audit/*/claude_session.txt
+audit/**/*.txt
