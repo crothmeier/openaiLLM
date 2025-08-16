@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nvme-model-server
+  namespace: ai-infer
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: nvme-model-server

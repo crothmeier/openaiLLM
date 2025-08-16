@@ -4,11 +4,20 @@ import os
 import json
 import shutil
 import subprocess
+import tempfile
+import fcntl
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 import logging
 
+from .validators import SecurityValidator
+
 logger = logging.getLogger(__name__)
+
+
+class SecurityException(Exception):
+    """Exception raised for security-related validation failures."""
+    pass
 
 
 class NVMeStorageManager:
@@ -24,22 +33,321 @@ class NVMeStorageManager:
         self.nvme_path = Path(config['storage']['nvme_path'])
         self.require_mount = config['storage'].get('require_mount', True)
         self.min_free_space_gb = config['storage'].get('min_free_space_gb', 50)
+    
+    def _validate_path_boundary(self, path: Path, base: Path) -> bool:
+        """Validate that a path stays within base directory after resolution.
         
-    def check_nvme_mounted(self) -> bool:
-        """Check if NVMe is mounted at the configured path.
-        
+        Args:
+            path: Path to validate
+            base: Base directory that path must be within
+            
         Returns:
-            bool: True if mounted, False otherwise
+            bool: True if path is within base, False otherwise
         """
         try:
-            result = subprocess.run(
-                ['mountpoint', '-q', str(self.nvme_path)],
-                capture_output=True
-            )
-            return result.returncode == 0
-        except Exception as e:
-            logger.error(f"Failed to check mount status: {e}")
+            resolved_path = path.resolve()
+            resolved_base = base.resolve()
+            # Python 3.9+ has is_relative_to, for older versions use string comparison
+            return str(resolved_path).startswith(str(resolved_base) + os.sep) or resolved_path == resolved_base
+        except (OSError, RuntimeError) as e:
+            logger.error(f"Path resolution failed: {e}")
             return False
+    
+    def _safe_path_join(self, *parts: str) -> Path:
+        """Safely join path components with security validation.
+        
+        Args:
+            *parts: Path components to join
+            
+        Returns:
+            Path: Safely joined path
+            
+        Raises:
+            SecurityException: If any path component fails security validation
+        """
+        validated_parts = []
+        
+        for i, part in enumerate(parts):
+            # Convert to string if it's a Path object
+            part_str = str(part)
+            
+            # Skip validation for the base nvme_path if it's the first component
+            # since it's already validated during initialization
+            if i == 0 and part_str == str(self.nvme_path):
+                validated_parts.append(part_str)
+                continue
+            
+            # Validate each component for path traversal attempts
+            if not SecurityValidator.validate_path_traversal(part_str):
+                raise SecurityException(
+                    f"Path component at index {i} contains invalid pattern: '{part_str}'. "
+                    f"Detected potential path traversal or absolute path attempt."
+                )
+            
+            validated_parts.append(part_str)
+        
+        # Join the validated parts
+        if validated_parts:
+            # Start with the first part as the base
+            result_path = Path(validated_parts[0])
+            
+            # Join remaining parts
+            for part in validated_parts[1:]:
+                result_path = result_path / part
+            
+            # Validate the final path stays within base
+            if not self._validate_path_boundary(result_path, self.nvme_path):
+                raise SecurityException(
+                    f"Path escapes base directory after resolution: {result_path}"
+                )
+            
+            return result_path
+        else:
+            raise SecurityException("No path components provided to join")
+    
+    def _acquire_lock(self) -> int:
+        """Acquire an exclusive lock for write operations.
+        
+        Opens a lock file and acquires a non-blocking exclusive lock.
+        
+        Returns:
+            int: File descriptor of the lock file
+            
+        Raises:
+            BlockingIOError: If lock cannot be acquired (another process holds it)
+            IOError: If lock file cannot be created
+        """
+        lock_file_path = self.nvme_path / '.nvme_models.lock'
+        
+        try:
+            # Open lock file (create if doesn't exist)
+            lock_fd = os.open(str(lock_file_path), os.O_CREAT | os.O_WRONLY, 0o644)
+            
+            # Try to acquire exclusive lock (non-blocking)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            
+            logger.debug(f"Acquired lock on {lock_file_path}")
+            return lock_fd
+            
+        except BlockingIOError:
+            # Lock is held by another process
+            logger.warning(f"Failed to acquire lock on {lock_file_path} - another operation in progress")
+            if 'lock_fd' in locals():
+                os.close(lock_fd)
+            raise BlockingIOError("Cannot acquire lock - another write operation is in progress")
+        except Exception as e:
+            logger.error(f"Error acquiring lock: {e}")
+            if 'lock_fd' in locals():
+                os.close(lock_fd)
+            raise IOError(f"Failed to acquire lock: {e}")
+    
+    def _release_lock(self, lock_fd: int):
+        """Release an exclusive lock.
+        
+        Args:
+            lock_fd: File descriptor of the lock file
+        """
+        try:
+            # Release the lock
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            # Close the file descriptor
+            os.close(lock_fd)
+            logger.debug("Released lock")
+        except Exception as e:
+            logger.warning(f"Error releasing lock: {e}")
+            # Still try to close the file descriptor
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+        
+    def check_nvme_mounted(self) -> Tuple[bool, Optional[Dict[str, str]]]:
+        """Check if NVMe is mounted at the configured path with detailed verification.
+        
+        Returns:
+            Tuple[bool, Optional[Dict]]: (is_mounted, error_details)
+                - is_mounted: True if properly mounted NVMe, False otherwise
+                - error_details: Dict with error information if check fails, None if successful
+        """
+        error_details = {}
+        
+        try:
+            # Step 1: Check if path exists
+            if not self.nvme_path.exists():
+                error_msg = f"Path does not exist: {self.nvme_path}"
+                logger.error(error_msg)
+                error_details['error'] = 'path_not_found'
+                error_details['message'] = error_msg
+                error_details['path'] = str(self.nvme_path)
+                return False, error_details
+            
+            # Step 2: Check if it's a directory
+            if not self.nvme_path.is_dir():
+                error_msg = f"Path exists but is not a directory: {self.nvme_path}"
+                logger.error(error_msg)
+                error_details['error'] = 'not_a_directory'
+                error_details['message'] = error_msg
+                error_details['path'] = str(self.nvme_path)
+                return False, error_details
+            
+            # Step 3: Check if it's actually mounted
+            try:
+                result = subprocess.run(
+                    ['mountpoint', '-q', str(self.nvme_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False  # We check returncode manually
+                )
+                
+                if result.returncode != 0:
+                    # Not a mount point - get more info
+                    mount_check = subprocess.run(
+                        ['mount'], 
+                        capture_output=True, 
+                        text=True,
+                        timeout=5,
+                        check=False
+                    )
+                    
+                    # Check if path appears in mount output
+                    is_mounted = str(self.nvme_path) in mount_check.stdout
+                    
+                    if not is_mounted:
+                        error_msg = f"Path exists but is not mounted: {self.nvme_path}"
+                        logger.warning(error_msg)
+                        error_details['error'] = 'not_mounted'
+                        error_details['message'] = error_msg
+                        error_details['path'] = str(self.nvme_path)
+                        # Don't return yet, check if it might be an NVMe device anyway
+                    
+            except subprocess.TimeoutExpired:
+                error_msg = "Mount check command timed out"
+                logger.error(error_msg)
+                error_details['error'] = 'mount_check_timeout'
+                error_details['message'] = error_msg
+                return False, error_details
+            except Exception as e:
+                error_msg = f"Failed to run mountpoint command: {e}"
+                logger.error(error_msg)
+                error_details['error'] = 'mount_check_failed'
+                error_details['message'] = error_msg
+                error_details['exception'] = str(e)
+                # Continue to device check anyway
+            
+            # Step 4: Verify it's an NVMe device
+            is_nvme = False
+            device_info = {}
+            
+            try:
+                # Get device for mount point
+                df_result = subprocess.run(
+                    ['df', str(self.nvme_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False
+                )
+                
+                if df_result.returncode == 0:
+                    lines = df_result.stdout.strip().split('\n')
+                    if len(lines) > 1:
+                        # Extract device from df output
+                        device = lines[1].split()[0]
+                        device_info['device'] = device
+                        
+                        # Check if device is NVMe
+                        if 'nvme' in device.lower():
+                            is_nvme = True
+                            logger.info(f"Detected NVMe device from path: {device}")
+                        else:
+                            # Check /sys/block for NVMe indicators
+                            sys_block_path = Path('/sys/block')
+                            if sys_block_path.exists():
+                                for block_dev in sys_block_path.iterdir():
+                                    if 'nvme' in block_dev.name:
+                                        model_path = block_dev / 'device' / 'model'
+                                        if model_path.exists():
+                                            try:
+                                                model = model_path.read_text().strip()
+                                                device_info['model'] = model
+                                                # Check if this device is related to our mount
+                                                dev_path = f"/dev/{block_dev.name}"
+                                                if dev_path in device or device.startswith(dev_path):
+                                                    is_nvme = True
+                                                    logger.info(f"Found NVMe device: {block_dev.name} - Model: {model}")
+                                                    break
+                                            except Exception as e:
+                                                logger.debug(f"Could not read model for {block_dev.name}: {e}")
+                
+                if not is_nvme:
+                    # Try alternative method: check lsblk
+                    try:
+                        lsblk_result = subprocess.run(
+                            ['lsblk', '-o', 'NAME,TYPE,MOUNTPOINT', '-J'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                            check=False
+                        )
+                        
+                        if lsblk_result.returncode == 0:
+                            import json
+                            lsblk_data = json.loads(lsblk_result.stdout)
+                            
+                            # Search for our mount point in the tree
+                            def find_mount(devices, mount_path):
+                                for device in devices:
+                                    if device.get('mountpoint') == str(mount_path):
+                                        return device
+                                    if 'children' in device:
+                                        found = find_mount(device['children'], mount_path)
+                                        if found:
+                                            return found
+                                return None
+                            
+                            mount_device = find_mount(lsblk_data.get('blockdevices', []), self.nvme_path)
+                            if mount_device and 'nvme' in mount_device.get('name', '').lower():
+                                is_nvme = True
+                                device_info['lsblk_device'] = mount_device.get('name')
+                                logger.info(f"Found NVMe device via lsblk: {mount_device.get('name')}")
+                    
+                    except Exception as e:
+                        logger.debug(f"Could not check lsblk: {e}")
+                
+            except subprocess.TimeoutExpired:
+                logger.warning("Device check timed out, assuming not NVMe")
+            except Exception as e:
+                logger.warning(f"Could not verify NVMe device: {e}")
+            
+            # Final determination
+            if result.returncode == 0 and is_nvme:
+                logger.info(f"Successfully verified NVMe mount at {self.nvme_path}")
+                return True, None
+            elif result.returncode == 0 and not is_nvme:
+                warning_msg = f"Path is mounted but not detected as NVMe device: {self.nvme_path}"
+                logger.warning(warning_msg)
+                error_details['warning'] = 'not_nvme_device'
+                error_details['message'] = warning_msg
+                error_details['device_info'] = device_info
+                # Return True if mounted (even if not confirmed NVMe)
+                return True, error_details
+            else:
+                # Not mounted
+                if not error_details:
+                    error_details['error'] = 'mount_verification_failed'
+                    error_details['message'] = f"Mount verification failed for {self.nvme_path}"
+                error_details['device_info'] = device_info
+                return False, error_details
+                
+        except Exception as e:
+            error_msg = f"Unexpected error checking NVMe mount: {e}"
+            logger.error(error_msg)
+            error_details['error'] = 'unexpected_error'
+            error_details['message'] = error_msg
+            error_details['exception'] = str(type(e).__name__)
+            error_details['details'] = str(e)
+            return False, error_details
     
     def get_disk_usage(self) -> Dict[str, int]:
         """Get disk usage statistics for NVMe storage.
@@ -79,15 +387,21 @@ class NVMeStorageManager:
         """
         try:
             # Check if mounted if required
-            if self.require_mount and not self.check_nvme_mounted():
-                logger.error(f"NVMe not mounted at {self.nvme_path}")
-                return False
+            if self.require_mount:
+                is_mounted, error_details = self.check_nvme_mounted()
+                if not is_mounted:
+                    logger.error(f"NVMe not mounted at {self.nvme_path}")
+                    if error_details:
+                        logger.error(f"Mount check details: {error_details}")
+                    return False
+                elif error_details and 'warning' in error_details:
+                    logger.warning(f"Mount check warning: {error_details.get('message', 'Unknown warning')}")
             
             # Create directory structure
             directories = [
-                self.nvme_path / 'hf-cache',
-                self.nvme_path / 'models',
-                self.nvme_path / 'ollama'
+                self._safe_path_join(self.nvme_path, 'hf-cache'),
+                self._safe_path_join(self.nvme_path, 'models'),
+                self._safe_path_join(self.nvme_path, 'ollama')
             ]
             
             for directory in directories:
@@ -107,12 +421,15 @@ class NVMeStorageManager:
             return False
     
     def _setup_environment_variables(self):
-        """Set up environment variables for model caching."""
+        """Set up environment variables for model caching.
+        
+        Note: Does not modify ~/.bashrc to respect systemd sandboxing.
+        """
         env_vars = {
-            'HF_HOME': str(self.nvme_path / 'hf-cache'),
-            'TRANSFORMERS_CACHE': str(self.nvme_path / 'hf-cache'),
-            'HUGGINGFACE_HUB_CACHE': str(self.nvme_path / 'hf-cache'),
-            'OLLAMA_MODELS': str(self.nvme_path / 'ollama')
+            'HF_HOME': str(self._safe_path_join(self.nvme_path, 'hf-cache')),
+            'TRANSFORMERS_CACHE': str(self._safe_path_join(self.nvme_path, 'hf-cache')),
+            'HUGGINGFACE_HUB_CACHE': str(self._safe_path_join(self.nvme_path, 'hf-cache')),
+            'OLLAMA_MODELS': str(self._safe_path_join(self.nvme_path, 'ollama'))
         }
         
         # Update current environment
@@ -120,30 +437,41 @@ class NVMeStorageManager:
             os.environ[key] = value
             logger.info(f"Set {key}={value}")
         
-        # Update ~/.bashrc
-        bashrc_path = Path.home() / '.bashrc'
-        if bashrc_path.exists():
-            with open(bashrc_path, 'r') as f:
-                content = f.read()
-            
-            for key, value in env_vars.items():
-                export_line = f'export {key}={value}'
-                if export_line not in content:
-                    with open(bashrc_path, 'a') as f:
-                        f.write(f'\n{export_line}')
-                    logger.info(f"Added {key} to ~/.bashrc")
+        # Write to environment file for systemd if configured
+        env_file_path = os.environ.get('NVME_MODELS_ENV_FILE')
+        if env_file_path:
+            try:
+                env_file = Path(env_file_path)
+                # Validate path is safe
+                if not self._validate_path_boundary(env_file, Path('/etc')):
+                    logger.warning(f"Environment file path outside /etc: {env_file_path}")
+                    return
+                
+                with open(env_file, 'w') as f:
+                    for key, value in env_vars.items():
+                        f.write(f'{key}={value}\n')
+                logger.info(f"Wrote environment variables to {env_file_path}")
+            except Exception as e:
+                logger.warning(f"Could not write environment file: {e}")
+        else:
+            logger.info("No NVME_MODELS_ENV_FILE configured, skipping persistent env setup")
     
     def _create_symlinks(self):
         """Create symlinks for backward compatibility."""
         symlinks = [
-            (Path.home() / '.cache' / 'huggingface', self.nvme_path / 'hf-cache'),
-            (Path.home() / '.ollama', self.nvme_path / 'ollama')
+            (Path.home() / '.cache' / 'huggingface', self._safe_path_join(self.nvme_path, 'hf-cache')),
+            (Path.home() / '.ollama', self._safe_path_join(self.nvme_path, 'ollama'))
         ]
         
         for link_path, target_path in symlinks:
             try:
                 # Create parent directory if needed
                 link_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Validate symlink target stays within base
+                if not self._validate_path_boundary(target_path, self.nvme_path):
+                    logger.warning(f"Skipping symlink with target outside base: {target_path}")
+                    continue
                 
                 # Remove existing file/directory if it exists
                 if link_path.exists() and not link_path.is_symlink():
@@ -178,19 +506,35 @@ class NVMeStorageManager:
         }
         
         # Check mount status
-        if self.check_nvme_mounted():
-            results['success'].append({'check': 'mount', 'message': f'{self.nvme_path} is mounted'})
-            results['summary']['nvme_mounted'] = True
+        is_mounted, mount_details = self.check_nvme_mounted()
+        if is_mounted:
+            if mount_details and 'warning' in mount_details:
+                results['warnings'].append({
+                    'check': 'mount',
+                    'message': mount_details.get('message', 'Mount check had warnings'),
+                    'details': mount_details
+                })
+                results['summary']['nvme_mounted'] = True
+                results['summary']['mount_warning'] = mount_details.get('warning')
+            else:
+                results['success'].append({'check': 'mount', 'message': f'{self.nvme_path} is mounted as NVMe'})
+                results['summary']['nvme_mounted'] = True
         else:
-            results['errors'].append({'check': 'mount', 'message': f'{self.nvme_path} is not mounted'})
+            error_msg = mount_details.get('message', f'{self.nvme_path} is not mounted') if mount_details else f'{self.nvme_path} is not mounted'
+            results['errors'].append({
+                'check': 'mount',
+                'message': error_msg,
+                'details': mount_details
+            })
             results['summary']['nvme_mounted'] = False
+            results['summary']['mount_error'] = mount_details.get('error') if mount_details else 'unknown'
             results['status'] = 'error'
         
         # Check directories
         directories = ['hf-cache', 'models', 'ollama']
         all_dirs_exist = True
         for dir_name in directories:
-            dir_path = self.nvme_path / dir_name
+            dir_path = self._safe_path_join(self.nvme_path, dir_name)
             if dir_path.exists():
                 size = self._get_dir_size(dir_path)
                 results['success'].append({
@@ -277,12 +621,14 @@ class NVMeStorageManager:
             result = subprocess.run(
                 ['du', '-sh', str(path)],
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=30,
+                check=False
             )
             if result.returncode == 0:
                 return result.stdout.split()[0]
-        except:
-            pass
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+            logger.debug(f"Failed to get directory size: {e}")
         return 'unknown'
     
     def _count_model_files(self) -> int:
@@ -297,8 +643,8 @@ class NVMeStorageManager:
         try:
             for ext in extensions:
                 count += len(list(self.nvme_path.rglob(f'*{ext}')))
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Error counting model files: {e}")
         
         return count
     
@@ -331,6 +677,225 @@ class NVMeStorageManager:
         
         return handler.download(model_id, **kwargs)
     
+    def _reserve_disk_space(self, size_gb: int) -> Optional[Path]:
+        """Reserve disk space by creating a sparse file.
+        
+        Args:
+            size_gb: Size to reserve in GB
+            
+        Returns:
+            Path to reservation file, or None if failed
+        """
+        try:
+            reserve_file = self.nvme_path / f'.space_reserve_{os.getpid()}'
+            size_bytes = size_gb * (1024 ** 3)
+            
+            # Create sparse file
+            with open(reserve_file, 'wb') as f:
+                f.seek(size_bytes - 1)
+                f.write(b'\0')
+            
+            # Verify space is actually available
+            usage = self.get_disk_usage()
+            if usage['available_gb'] < self.min_free_space_gb:
+                reserve_file.unlink()
+                return None
+            
+            return reserve_file
+        except Exception as e:
+            logger.error(f"Failed to reserve disk space: {e}")
+            return None
+    
+    def _release_disk_reservation(self, reserve_file: Path):
+        """Release disk space reservation."""
+        try:
+            if reserve_file and reserve_file.exists():
+                reserve_file.unlink()
+        except Exception as e:
+            logger.debug(f"Failed to release reservation: {e}")
+    
+    def download_atomic(self, provider: str, model_id: str, target_path: Path) -> Path:
+        """Download a model atomically to ensure data integrity.
+        
+        Downloads to a temporary directory first, validates the download,
+        then atomically moves to the target location. This prevents partial
+        downloads or corrupted files from being left in the target location.
+        Uses file locking to prevent race conditions.
+        
+        Args:
+            provider: Provider name ('hf', 'ollama', etc.)
+            model_id: Model identifier
+            target_path: Final destination path for the model
+            
+        Returns:
+            Path: The final path where the model was successfully downloaded
+            
+        Raises:
+            Exception: If download fails, validation fails, or atomic move fails
+            BlockingIOError: If another download is in progress
+        """
+        # Validate model_id first
+        if not SecurityValidator.validate_model_id(provider, model_id):
+            raise SecurityException(f"Invalid model ID for provider {provider}: {model_id}")
+        
+        # Acquire lock before starting download
+        lock_fd = None
+        temp_dir = None
+        reserve_file = None
+        
+        try:
+            # Acquire exclusive lock for write operation
+            lock_fd = self._acquire_lock()
+            
+            # Create a temporary directory with a unique name
+            safe_model_name = model_id.replace("/", "_").replace("\\", "_")
+            # Create temporary directory in the nvme path
+            temp_dir = tempfile.mkdtemp(
+                prefix='.tmp_',
+                suffix=f'_{safe_model_name}',
+                dir=self.nvme_path
+            )
+            temp_dir_path = Path(temp_dir)
+            logger.info(f"Created temporary directory for atomic download: {temp_dir_path}")
+            
+            # Get provider handler
+            from .models import get_provider_handler
+            handler = get_provider_handler(provider, self.config)
+            if not handler:
+                raise ValueError(f"Unknown provider: {provider}")
+            
+            # Check disk space before download
+            estimated_size = handler.estimate_model_size(model_id)
+            required_space = estimated_size * 2  # Need 2x space for download + move
+            
+            # Reserve disk space
+            reserve_file = self._reserve_disk_space(required_space)
+            if not reserve_file:
+                available_gb = self.get_disk_usage()['available_gb']
+                raise IOError(
+                    f"Insufficient disk space. Required: {required_space}GB, "
+                    f"Available: {available_gb}GB"
+                )
+            
+            # Download to temporary directory
+            logger.info(f"Downloading {model_id} to temporary location...")
+            temp_model_path = temp_dir_path / safe_model_name
+            
+            # Perform the download (provider-specific implementation)
+            success = handler.download_to_path(model_id, temp_model_path)
+            if not success:
+                raise RuntimeError(f"Download failed for {model_id}")
+            
+            # Validate the download by checking for expected files
+            logger.info(f"Validating download of {model_id}...")
+            if not self._validate_download(temp_model_path, provider, model_id):
+                raise ValueError(f"Download validation failed for {model_id}")
+            
+            # Ensure target directory exists
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Validate target path stays within base
+            if not self._validate_path_boundary(target_path, self.nvme_path):
+                raise SecurityException(f"Target path escapes base directory: {target_path}")
+            
+            # Perform atomic move to target location
+            logger.info(f"Moving {model_id} to final location: {target_path}")
+            shutil.move(str(temp_model_path), str(target_path))
+            
+            logger.info(f"Successfully downloaded {model_id} to {target_path}")
+            return target_path
+            
+        except Exception as e:
+            logger.error(f"Atomic download failed for {model_id}: {e}")
+            # Clean up temporary directory on failure
+            if temp_dir and Path(temp_dir).exists():
+                logger.info(f"Cleaning up temporary directory: {temp_dir}")
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
+            raise
+        finally:
+            # Release disk space reservation
+            if reserve_file:
+                self._release_disk_reservation(reserve_file)
+            # Always release the lock
+            if lock_fd is not None:
+                self._release_lock(lock_fd)
+            
+            # Clean up temp directory if it still exists (in case of successful move)
+            if temp_dir and Path(temp_dir).exists():
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as cleanup_error:
+                    logger.debug(f"Could not remove temp directory {temp_dir}: {cleanup_error}")
+    
+    def _validate_download(self, model_path: Path, provider: str, model_id: str) -> bool:
+        """Validate that a model was downloaded successfully.
+        
+        Args:
+            model_path: Path where model was downloaded
+            provider: Provider name
+            model_id: Model identifier
+            
+        Returns:
+            bool: True if validation passes, False otherwise
+        """
+        # Check if path exists
+        if not model_path.exists():
+            logger.error(f"Download validation failed: {model_path} does not exist")
+            return False
+        
+        # Check if it's a directory or file based on provider expectations
+        if provider in ['hf', 'huggingface']:
+            # HuggingFace models are typically directories with multiple files
+            if not model_path.is_dir():
+                logger.error(f"Expected directory for HF model but got file: {model_path}")
+                return False
+            
+            # Check for common HF model files
+            expected_extensions = ['.safetensors', '.bin', '.json', '.txt']
+            found_files = list(model_path.rglob('*'))
+            
+            if not found_files:
+                logger.error(f"No files found in downloaded model directory: {model_path}")
+                return False
+            
+            # Check if we have at least one model file
+            model_files = [f for f in found_files 
+                          if any(str(f).endswith(ext) for ext in ['.safetensors', '.bin', '.gguf', '.pt'])]
+            
+            if not model_files:
+                logger.warning(f"No model weight files found in {model_path}")
+                # Don't fail validation - some models might have different structures
+            
+        elif provider == 'ollama':
+            # Ollama models might be single files or directories
+            if not model_path.exists():
+                logger.error(f"Ollama model not found at {model_path}")
+                return False
+        else:
+            # For unknown providers, just check existence
+            if not model_path.exists():
+                logger.error(f"Model not found at {model_path}")
+                return False
+        
+        # Check if the download is not empty
+        if model_path.is_file():
+            size = model_path.stat().st_size
+            if size == 0:
+                logger.error(f"Downloaded file is empty: {model_path}")
+                return False
+        elif model_path.is_dir():
+            # Check total size of directory
+            total_size = sum(f.stat().st_size for f in model_path.rglob('*') if f.is_file())
+            if total_size == 0:
+                logger.error(f"Downloaded directory is empty: {model_path}")
+                return False
+        
+        logger.info(f"Download validation passed for {model_id}")
+        return True
+    
     def list_models(self) -> List[Dict]:
         """List all downloaded models.
         
@@ -340,7 +905,7 @@ class NVMeStorageManager:
         models = []
         
         # List models in /mnt/nvme/models
-        models_dir = self.nvme_path / 'models'
+        models_dir = self._safe_path_join(self.nvme_path, 'models')
         if models_dir.exists():
             for model_path in models_dir.iterdir():
                 if model_path.is_dir() and not model_path.name.startswith('.'):
@@ -356,7 +921,9 @@ class NVMeStorageManager:
             result = subprocess.run(
                 ['ollama', 'list'],
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=30,
+                check=False
             )
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')[1:]  # Skip header
@@ -365,11 +932,11 @@ class NVMeStorageManager:
                     if parts:
                         models.append({
                             'name': parts[0],
-                            'path': str(self.nvme_path / 'ollama'),
+                            'path': str(self._safe_path_join(self.nvme_path, 'ollama')),
                             'size': parts[1] if len(parts) > 1 else 'unknown',
                             'provider': 'ollama'
                         })
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to list Ollama models: {e}")
         
         return models

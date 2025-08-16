@@ -1,0 +1,8 @@
+# NVMe Model Storage Environment Configuration
+HF_HOME=/mnt/nvme/hf-cache
+TRANSFORMERS_CACHE=/mnt/nvme/hf-cache
+HUGGINGFACE_HUB_CACHE=/mnt/nvme/hf-cache
+OLLAMA_MODELS=/mnt/nvme/ollama
+NVME_PATH=/mnt/nvme
+MIN_FREE_SPACE_GB=50
+LOG_LEVEL=INFO

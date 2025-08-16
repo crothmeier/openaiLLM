@@ -4,6 +4,7 @@ import re
 import os
 from pathlib import Path
 from typing import Optional, Tuple
+import subprocess
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,32 @@ logger = logging.getLogger(__name__)
 class ValidationError(Exception):
     """Custom exception for validation errors."""
     pass
+
+
+def safe_exec(cmd: list, timeout: int = 30, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    """Execute subprocess with safety constraints.
+    
+    Args:
+        cmd: Command list to execute
+        timeout: Timeout in seconds (default 30)
+        check: Whether to check return code
+        **kwargs: Additional subprocess.run arguments
+        
+    Returns:
+        CompletedProcess instance
+        
+    Raises:
+        subprocess.TimeoutExpired: If command times out
+        subprocess.CalledProcessError: If check=True and command fails
+    """
+    return subprocess.run(
+        cmd,
+        timeout=timeout,
+        check=check,
+        capture_output=True,
+        text=True,
+        **kwargs
+    )
 
 
 class Validator:
@@ -97,6 +124,13 @@ class Validator:
         except Exception as e:
             raise ValidationError(f"Invalid path: {path} - {e}")
         
+        # Check for null bytes and control characters
+        if '\0' in str(path):
+            raise ValidationError(f"Path contains null byte: {path}")
+        
+        # Normalize and resolve symlinks
+        validated_path = validated_path.resolve()
+        
         # Check if path exists (for read operations)
         # Note: We don't check existence for write operations
         
@@ -104,7 +138,13 @@ class Validator:
         if base_path:
             try:
                 base = Path(base_path).resolve()
-                if not str(validated_path).startswith(str(base)):
+                # Use is_relative_to for Python 3.9+, fallback to string comparison
+                try:
+                    is_within = validated_path.is_relative_to(base)
+                except AttributeError:
+                    # Python < 3.9 fallback
+                    is_within = str(validated_path).startswith(str(base) + os.sep) or validated_path == base
+                if not is_within:
                     raise ValidationError(
                         f"Path {validated_path} is outside allowed base path {base}"
                     )
@@ -307,3 +347,173 @@ class Validator:
         
         # Default conservative estimate
         return 10
+
+
+class SecurityValidator:
+    """Security-focused validation for inputs to prevent common vulnerabilities."""
+    
+    @staticmethod
+    def validate_path_traversal(path: str) -> bool:
+        """Validate that a path doesn't contain directory traversal attempts.
+        
+        Args:
+            path: Path string to validate
+            
+        Returns:
+            bool: False if path contains traversal patterns or absolute paths, True otherwise
+        """
+        # Check for directory traversal patterns
+        if '../' in path or '..\\' in path:
+            return False
+        
+        # Check for absolute paths (Unix)
+        if path.startswith('/'):
+            return False
+        
+        # Check for Windows drive letters
+        if len(path) >= 2 and path[1] == ':':
+            # Check for patterns like C:, D:, etc.
+            if path[0].isalpha():
+                return False
+        
+        # Check for UNC paths (Windows network paths)
+        if path.startswith('\\\\'):
+            return False
+        
+        return True
+    
+    @staticmethod
+    def validate_command_injection(input_str: str) -> bool:
+        """Validate that input doesn't contain shell metacharacters.
+        
+        Args:
+            input_str: Input string to validate
+            
+        Returns:
+            bool: False if input contains dangerous shell metacharacters, True otherwise
+        """
+        # Define dangerous shell metacharacters
+        dangerous_chars = [
+            ';',   # Command separator
+            '|',   # Pipe
+            '&',   # Background/command separator
+            '$',   # Variable expansion
+            '`',   # Command substitution
+            '(',   # Subshell
+            ')',   # Subshell
+            '{',   # Command grouping
+            '}',   # Command grouping
+            '<',   # Input redirection
+            '>',   # Output redirection
+            '\n',  # Newline
+            '\r',  # Carriage return
+        ]
+        
+        # Check for presence of any dangerous character
+        for char in dangerous_chars:
+            if char in input_str:
+                return False
+        
+        return True
+    
+    @staticmethod
+    def sanitize_for_filesystem(name: str) -> str:
+        """Sanitize a string for safe use as a filesystem name.
+        
+        Args:
+            name: String to sanitize
+            
+        Returns:
+            str: Sanitized string safe for filesystem use
+        """
+        # Remove leading/trailing spaces and dots
+        name = name.strip(' .')
+        
+        # Replace characters not in allowed set with underscores
+        # Allowed: alphanumeric, dot, underscore, hyphen
+        sanitized = re.sub(r'[^a-zA-Z0-9._\-]', '_', name)
+        
+        # Remove leading dots (hidden files) and trailing dots
+        sanitized = sanitized.lstrip('.').rstrip('.')
+        
+        # Limit length to 255 characters (common filesystem limit)
+        if len(sanitized) > 255:
+            sanitized = sanitized[:255]
+        
+        # If empty after sanitization, provide a default
+        if not sanitized:
+            sanitized = 'unnamed'
+        
+        return sanitized
+    
+    @staticmethod
+    def validate_model_id(model_id: str, provider: str) -> Tuple[bool, str]:
+        """Validate model ID based on provider-specific patterns.
+        
+        Args:
+            model_id: Model identifier to validate
+            provider: Provider type ('huggingface' or 'ollama')
+            
+        Returns:
+            tuple: (is_valid, error_message) where error_message is empty if valid
+        """
+        # Check for empty model ID
+        if not model_id:
+            error_msg = "Model ID cannot be empty"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        # Check length constraint
+        if len(model_id) > 256:
+            error_msg = f"Model ID exceeds maximum length of 256 characters: {len(model_id)}"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        # Check for command injection attempts
+        dangerous_chars = [
+            ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', 
+            '\n', '\r', '\0', '\x00', '\x1a', '\x1b'
+        ]
+        for char in dangerous_chars:
+            if char in model_id:
+                char_repr = repr(char) if ord(char) < 32 else char
+                error_msg = (
+                    f"Model ID contains dangerous character {char_repr}: "
+                    f"potential command injection attempt"
+                )
+                logger.warning(f"Validation failed: {error_msg}")
+                return False, error_msg
+        
+        # Check for path traversal attempts
+        if '..' in model_id or model_id.startswith('/') or model_id.startswith('\\'):
+            error_msg = f"Model ID contains path traversal pattern: {model_id}"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        # Check for URL schemes that could be malicious
+        if any(scheme in model_id.lower() for scheme in ['http://', 'https://', 'ftp://', 'file://']):
+            error_msg = f"Model ID contains URL scheme: {model_id}"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        # Provider-specific validation
+        if provider.lower() == 'huggingface':
+            # HuggingFace pattern: organization/model-name
+            pattern = re.compile(r'^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$')
+            if not pattern.match(model_id):
+                error_msg = f"Invalid HuggingFace model ID format: {model_id}. Expected pattern: 'organization/model-name'"
+                logger.warning(f"Validation failed: {error_msg}")
+                return False, error_msg
+        elif provider.lower() == 'ollama':
+            # Ollama pattern: model-name or model-name:tag
+            pattern = re.compile(r'^[a-zA-Z0-9_-]+(:[a-zA-Z0-9._-]+)?$')
+            if not pattern.match(model_id):
+                error_msg = f"Invalid Ollama model ID format: {model_id}. Expected pattern: 'model-name' or 'model-name:tag'"
+                logger.warning(f"Validation failed: {error_msg}")
+                return False, error_msg
+        else:
+            error_msg = f"Unknown provider: {provider}. Supported providers: 'huggingface', 'ollama'"
+            logger.warning(f"Validation failed: {error_msg}")
+            return False, error_msg
+        
+        return True, ""

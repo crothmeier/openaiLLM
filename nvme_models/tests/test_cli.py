@@ -260,9 +260,9 @@ class TestDownloadCommand:
 class TestListCommand:
     """Test cases for the list command."""
     
-    @patch('nvme_models.cli.VLLMHandler')
-    @patch('nvme_models.cli.OllamaHandler')
-    @patch('nvme_models.cli.HuggingFaceHandler')
+    @patch('nvme_models.models.vllm.VLLMHandler')
+    @patch('nvme_models.models.ollama.OllamaHandler')
+    @patch('nvme_models.models.huggingface.HuggingFaceHandler')
     @patch('nvme_models.cli.NVMeStorageManager')
     def test_list_all_models(self, mock_storage_manager, mock_hf, mock_ollama, mock_vllm, runner, temp_config):
         """Test listing all models."""
@@ -289,7 +289,7 @@ class TestListCommand:
         assert 'hf-model' in result.output
         assert 'ollama-model' in result.output
     
-    @patch('nvme_models.cli.HuggingFaceHandler')
+    @patch('nvme_models.models.huggingface.HuggingFaceHandler')
     @patch('nvme_models.cli.NVMeStorageManager')
     def test_list_filtered_by_provider(self, mock_storage_manager, mock_hf, runner, temp_config):
         """Test listing models filtered by provider."""
@@ -311,9 +311,9 @@ class TestListCommand:
         assert result.exit_code == 0
         assert 'hf-model' in result.output
     
-    @patch('nvme_models.cli.HuggingFaceHandler')
-    @patch('nvme_models.cli.OllamaHandler')
-    @patch('nvme_models.cli.VLLMHandler')
+    @patch('nvme_models.models.huggingface.HuggingFaceHandler')
+    @patch('nvme_models.models.ollama.OllamaHandler')
+    @patch('nvme_models.models.vllm.VLLMHandler')
     @patch('nvme_models.cli.NVMeStorageManager')
     def test_list_no_models(self, mock_storage_manager, mock_hf, mock_ollama, mock_vllm, runner, temp_config):
         """Test listing when no models are found."""
@@ -379,6 +379,267 @@ class TestCleanCommand:
         
         assert result.exit_code == 0
         assert 'No temporary files to clean' in result.output
+
+
+class TestMountVerification:
+    """Test cases for mount verification across all commands."""
+    
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_setup_mount_check_fails(self, mock_storage_manager, runner, temp_config):
+        """Test setup command exits when mount check fails."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage_manager.return_value = mock_storage
+        
+        result = runner.invoke(cli, ['--config', temp_config, 'setup'])
+        
+        assert result.exit_code == 1
+        assert 'Error: NVMe storage not mounted at /mnt/nvme' in result.output
+        mock_storage.check_nvme_mounted.assert_called_once()
+        mock_storage.setup_nvme.assert_not_called()
+    
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_setup_with_no_verify_mount_flag(self, mock_storage_manager, runner, temp_config):
+        """Test setup command works with --no-verify-mount even when mount check would fail."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage.setup_nvme.return_value = True
+        mock_storage.get_disk_usage.return_value = {
+            'available_gb': 100,
+            'usage_percent': 50.0
+        }
+        mock_storage_manager.return_value = mock_storage
+        
+        result = runner.invoke(cli, ['--config', temp_config, 'setup', '--no-verify-mount'])
+        
+        assert result.exit_code == 0
+        assert 'NVMe storage setup complete' in result.output
+        mock_storage.check_nvme_mounted.assert_not_called()
+        mock_storage.setup_nvme.assert_called_once()
+    
+    @patch('nvme_models.models.get_provider_handler')
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_download_mount_check_fails(self, mock_storage_manager, mock_get_handler, runner, temp_config):
+        """Test download command exits when mount check fails."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage_manager.return_value = mock_storage
+        
+        result = runner.invoke(cli, [
+            '--config', temp_config,
+            'download', 'test-model',
+            '--provider', 'hf'
+        ])
+        
+        assert result.exit_code == 1
+        assert 'Error: NVMe storage not mounted at /mnt/nvme' in result.output
+        mock_storage.check_nvme_mounted.assert_called_once()
+        mock_get_handler.assert_not_called()
+    
+    @patch('nvme_models.models.get_provider_handler')
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_download_with_no_verify_mount_flag(self, mock_storage_manager, mock_get_handler, runner, temp_config):
+        """Test download command works with --no-verify-mount even when mount check would fail."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage.check_disk_space.return_value = True
+        mock_storage_manager.return_value = mock_storage
+        
+        mock_handler = Mock()
+        mock_handler.estimate_model_size.return_value = 10
+        mock_handler.download.return_value = True
+        mock_handler.list_models.return_value = []
+        mock_get_handler.return_value = mock_handler
+        
+        result = runner.invoke(cli, [
+            '--config', temp_config,
+            'download', 'test-model',
+            '--provider', 'hf',
+            '--no-verify-mount'
+        ])
+        
+        assert result.exit_code == 0
+        assert 'Successfully downloaded' in result.output
+        mock_storage.check_nvme_mounted.assert_not_called()
+        mock_handler.download.assert_called_once()
+    
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_verify_mount_check_fails(self, mock_storage_manager, runner, temp_config):
+        """Test verify command exits when mount check fails."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage_manager.return_value = mock_storage
+        
+        result = runner.invoke(cli, ['--config', temp_config, 'verify'])
+        
+        assert result.exit_code == 1
+        assert 'Error: NVMe storage not mounted at /mnt/nvme' in result.output
+        mock_storage.check_nvme_mounted.assert_called_once()
+        mock_storage.verify.assert_not_called()
+    
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_verify_with_no_verify_mount_flag(self, mock_storage_manager, runner, temp_config):
+        """Test verify command works with --no-verify-mount even when mount check would fail."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage.verify.return_value = {
+            'status': 'success',
+            'errors': [],
+            'warnings': [],
+            'success': [{'message': 'Test'}],
+            'summary': {'nvme_mounted': False}
+        }
+        mock_storage_manager.return_value = mock_storage
+        
+        result = runner.invoke(cli, ['--config', temp_config, 'verify', '--no-verify-mount'])
+        
+        assert result.exit_code == 0
+        assert 'NVMe Storage Verification' in result.output
+        mock_storage.check_nvme_mounted.assert_not_called()
+        mock_storage.verify.assert_called_once()
+    
+    @patch('nvme_models.models.vllm.VLLMHandler')
+    @patch('nvme_models.models.ollama.OllamaHandler')
+    @patch('nvme_models.models.huggingface.HuggingFaceHandler')
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_list_mount_check_fails(self, mock_storage_manager, mock_hf, mock_ollama, mock_vllm, runner, temp_config):
+        """Test list command exits when mount check fails."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage_manager.return_value = mock_storage
+        
+        result = runner.invoke(cli, ['--config', temp_config, 'list'])
+        
+        assert result.exit_code == 1
+        assert 'Error: NVMe storage not mounted at /mnt/nvme' in result.output
+        mock_storage.check_nvme_mounted.assert_called_once()
+        mock_hf.assert_not_called()
+        mock_ollama.assert_not_called()
+        mock_vllm.assert_not_called()
+    
+    @patch('nvme_models.models.vllm.VLLMHandler')
+    @patch('nvme_models.models.ollama.OllamaHandler')
+    @patch('nvme_models.models.huggingface.HuggingFaceHandler')
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_list_with_no_verify_mount_flag(self, mock_storage_manager, mock_hf, mock_ollama, mock_vllm, runner, temp_config):
+        """Test list command works with --no-verify-mount even when mount check would fail."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage.get_disk_usage.return_value = {
+            'used_gb': 100,
+            'available_gb': 400
+        }
+        mock_storage_manager.return_value = mock_storage
+        
+        mock_hf.return_value.list_models.return_value = []
+        mock_ollama.return_value.list_models.return_value = []
+        mock_vllm.return_value.list_models.return_value = []
+        
+        result = runner.invoke(cli, ['--config', temp_config, 'list', '--no-verify-mount'])
+        
+        assert result.exit_code == 0
+        assert 'No models found' in result.output
+        mock_storage.check_nvme_mounted.assert_not_called()
+    
+    @patch('pathlib.Path.rglob')
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_clean_mount_check_fails(self, mock_storage_manager, mock_rglob, runner, temp_config):
+        """Test clean command exits when mount check fails."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage_manager.return_value = mock_storage
+        
+        result = runner.invoke(cli, ['--config', temp_config, 'clean'])
+        
+        assert result.exit_code == 1
+        assert 'Error: NVMe storage not mounted at /mnt/nvme' in result.output
+        mock_storage.check_nvme_mounted.assert_called_once()
+        mock_rglob.assert_not_called()
+    
+    @patch('nvme_models.cli.Path')
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_clean_with_no_verify_mount_flag(self, mock_storage_manager, mock_path_class, runner, temp_config):
+        """Test clean command works with --no-verify-mount even when mount check would fail."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage_manager.return_value = mock_storage
+        
+        # Mock Path operations
+        mock_path_instance = Mock()
+        mock_path_instance.rglob.side_effect = [[], []]
+        mock_path_class.return_value = mock_path_instance
+        
+        result = runner.invoke(cli, ['--config', temp_config, 'clean', '--no-verify-mount'])
+        
+        assert result.exit_code == 0
+        assert 'No temporary files to clean' in result.output
+        mock_storage.check_nvme_mounted.assert_not_called()
+    
+    @patch('nvme_models.models.get_provider_handler')
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_info_mount_check_fails(self, mock_storage_manager, mock_get_handler, runner, temp_config):
+        """Test info command exits when mount check fails."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage_manager.return_value = mock_storage
+        
+        result = runner.invoke(cli, [
+            '--config', temp_config,
+            'info', 'test-model',
+            '--provider', 'hf'
+        ])
+        
+        assert result.exit_code == 1
+        assert 'Error: NVMe storage not mounted at /mnt/nvme' in result.output
+        mock_storage.check_nvme_mounted.assert_called_once()
+        mock_get_handler.assert_not_called()
+    
+    @patch('nvme_models.models.get_provider_handler')
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_info_with_no_verify_mount_flag(self, mock_storage_manager, mock_get_handler, runner, temp_config):
+        """Test info command works with --no-verify-mount even when mount check would fail."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = False
+        mock_storage_manager.return_value = mock_storage
+        
+        mock_handler = Mock()
+        mock_handler.verify_model.return_value = {
+            'status': 'success',
+            'checks': [{'message': 'Model exists', 'status': 'passed'}]
+        }
+        mock_get_handler.return_value = mock_handler
+        
+        result = runner.invoke(cli, [
+            '--config', temp_config,
+            'info', 'test-model',
+            '--provider', 'hf',
+            '--no-verify-mount'
+        ])
+        
+        assert result.exit_code == 0
+        assert 'Model Information' in result.output
+        mock_storage.check_nvme_mounted.assert_not_called()
+        mock_handler.verify_model.assert_called_once()
+    
+    @patch('nvme_models.cli.NVMeStorageManager')
+    def test_all_commands_with_mounted_nvme(self, mock_storage_manager, runner, temp_config):
+        """Test that commands work normally when NVMe is mounted."""
+        mock_storage = Mock()
+        mock_storage.check_nvme_mounted.return_value = True
+        mock_storage.setup_nvme.return_value = True
+        mock_storage.get_disk_usage.return_value = {
+            'available_gb': 100,
+            'usage_percent': 50.0
+        }
+        mock_storage_manager.return_value = mock_storage
+        
+        # Test setup with mounted NVMe
+        result = runner.invoke(cli, ['--config', temp_config, 'setup'])
+        
+        assert result.exit_code == 0
+        assert 'NVMe storage setup complete' in result.output
+        mock_storage.check_nvme_mounted.assert_called()
+        mock_storage.setup_nvme.assert_called_once()
 
 
 class TestInfoCommand:
