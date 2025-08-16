@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-nvme-hotcache
+  namespace: ai-infer
+spec:
+  accessModes: [ ReadWriteOnce ]
+  storageClassName: local-nvme
+  resources:
+    requests: { storage: 900Gi }
+  volumeName: pv-nvme-hotcache

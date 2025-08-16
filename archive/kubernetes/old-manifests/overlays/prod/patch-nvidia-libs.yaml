@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: ai-infer
+spec:
+  template:
+    spec:
+      volumes:
+      - name: nvidia-install-dir-host
+        hostPath:
+          path: /usr/local/nvidia
+          type: Directory
+      containers:
+      - name: vllm
+        volumeMounts:
+        - name: nvidia-install-dir-host
+          mountPath: /usr/local/nvidia
+        env:
+        - name: LD_LIBRARY_PATH
+          value: "/usr/local/nvidia/lib64"

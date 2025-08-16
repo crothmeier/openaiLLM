@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - storage/pv-nvme.yaml
+  - storage/pvc-nvme.yaml
+  - apps/vllm-deploy.yaml
+  - monitoring/vllm-rules.yaml
