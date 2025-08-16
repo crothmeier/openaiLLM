@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-nvme
+  namespace: ai-infer
+spec:
+  nodeSelector:
+    gpu: nvidia
+  volumes:
+  - name: models
+    persistentVolumeClaim:
+      claimName: pvc-nvme-hotcache
+  containers:
+  - name: debug
+    image: busybox
+    command: ["sleep", "300"]
+    volumeMounts:
+    - name: models
+      mountPath: /mnt/nvme
