@@ -260,9 +260,9 @@ class TestDownloadCommand:
 class TestListCommand:
     """Test cases for the list command."""
     
-    @patch('nvme_models.cli.VLLMHandler')
-    @patch('nvme_models.cli.OllamaHandler')
-    @patch('nvme_models.cli.HuggingFaceHandler')
+    @patch('nvme_models.models.vllm.VLLMHandler')
+    @patch('nvme_models.models.ollama.OllamaHandler')
+    @patch('nvme_models.models.huggingface.HuggingFaceHandler')
     @patch('nvme_models.cli.NVMeStorageManager')
     def test_list_all_models(self, mock_storage_manager, mock_hf, mock_ollama, mock_vllm, runner, temp_config):
         """Test listing all models."""
@@ -289,7 +289,7 @@ class TestListCommand:
         assert 'hf-model' in result.output
         assert 'ollama-model' in result.output
     
-    @patch('nvme_models.cli.HuggingFaceHandler')
+    @patch('nvme_models.models.huggingface.HuggingFaceHandler')
     @patch('nvme_models.cli.NVMeStorageManager')
     def test_list_filtered_by_provider(self, mock_storage_manager, mock_hf, runner, temp_config):
         """Test listing models filtered by provider."""
@@ -311,9 +311,9 @@ class TestListCommand:
         assert result.exit_code == 0
         assert 'hf-model' in result.output
     
-    @patch('nvme_models.cli.HuggingFaceHandler')
-    @patch('nvme_models.cli.OllamaHandler')
-    @patch('nvme_models.cli.VLLMHandler')
+    @patch('nvme_models.models.huggingface.HuggingFaceHandler')
+    @patch('nvme_models.models.ollama.OllamaHandler')
+    @patch('nvme_models.models.vllm.VLLMHandler')
     @patch('nvme_models.cli.NVMeStorageManager')
     def test_list_no_models(self, mock_storage_manager, mock_hf, mock_ollama, mock_vllm, runner, temp_config):
         """Test listing when no models are found."""

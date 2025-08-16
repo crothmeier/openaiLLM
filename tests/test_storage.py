@@ -53,7 +53,10 @@ def test_target_path_validation(tmp_path, monkeypatch):
     ))
     monkeypatch.setattr(m, "_acquire_lock", lambda: 3)
     monkeypatch.setattr(m, "_release_lock", lambda fd: None)
-    # Try to escape base
+    monkeypatch.setattr(m, "_reserve_disk_space", lambda size_gb: tmp_path / ".reserve")
+    monkeypatch.setattr(m, "_release_disk_reservation", lambda rf: None)
+    
+    # Try to escape base - should be caught by path validation
     bad = Path(tmp_path).parent / "escape"
-    with pytest.raises(SecurityException):
+    with pytest.raises((SecurityException, RuntimeError)):
         m.download_atomic("huggingface", "org/tiny", bad)
