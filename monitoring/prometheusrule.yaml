@@ -1,0 +1,74 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nvme-model-server
+  namespace: ai-infer
+  labels:
+    app: nvme-model-server
+    prometheus: kube-prometheus
+spec:
+  groups:
+  - name: nvme-model-server.rules
+    interval: 30s
+    rules:
+    # High memory usage
+    - alert: NVMeModelServerHighMemory
+      expr: |
+        (container_memory_working_set_bytes{namespace="ai-infer",pod=~"nvme-model-server-.*",container="api"} 
+         / container_spec_memory_limit_bytes{namespace="ai-infer",pod=~"nvme-model-server-.*",container="api"}) > 0.9
+      for: 5m
+      labels:
+        severity: warning
+        component: nvme-model-server
+      annotations:
+        summary: "High memory usage in NVMe Model Server"
+        description: "Pod {{ $labels.pod }} memory usage is above 90% (current: {{ $value | humanizePercentage }})"
+    
+    # Pod not ready
+    - alert: NVMeModelServerNotReady
+      expr: |
+        kube_pod_status_ready{namespace="ai-infer",pod=~"nvme-model-server-.*",condition="true"} != 1
+      for: 5m
+      labels:
+        severity: critical
+        component: nvme-model-server
+      annotations:
+        summary: "NVMe Model Server pod not ready"
+        description: "Pod {{ $labels.pod }} has been not ready for more than 5 minutes"
+    
+    # High GPU memory usage
+    - alert: NVMeModelServerHighGPUMemory
+      expr: |
+        DCGM_FI_DEV_FB_USED{namespace="ai-infer",pod=~"nvme-model-server-.*"} 
+        / DCGM_FI_DEV_FB_FREE{namespace="ai-infer",pod=~"nvme-model-server-.*"} > 0.95
+      for: 5m
+      labels:
+        severity: warning
+        component: nvme-model-server
+      annotations:
+        summary: "High GPU memory usage"
+        description: "GPU memory usage for pod {{ $labels.pod }} is above 95%"
+    
+    # NVMe storage low
+    - alert: NVMeStorageLow
+      expr: |
+        node_filesystem_avail_bytes{mountpoint="/mnt/nvme"} < 50 * 1024 * 1024 * 1024
+      for: 10m
+      labels:
+        severity: warning
+        component: storage
+      annotations:
+        summary: "NVMe storage space low"
+        description: "NVMe storage at /mnt/nvme has less than 50GB free (current: {{ $value | humanize1024 }}B)"
+    
+    # API endpoint down
+    - alert: NVMeModelServerEndpointDown
+      expr: |
+        up{job="nvme-model-server",namespace="ai-infer"} != 1
+      for: 2m
+      labels:
+        severity: critical
+        component: nvme-model-server
+      annotations:
+        summary: "NVMe Model Server endpoint down"
+        description: "NVMe Model Server metrics endpoint has been down for more than 2 minutes"

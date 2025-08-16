@@ -1,0 +1,61 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nvme-model-server
+  namespace: ai-infer
+spec:
+  podSelector:
+    matchLabels:
+      app: nvme-model-server
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow from any pod in the namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ai-infer
+    ports:
+    - protocol: TCP
+      port: 8001
+  # Allow from monitoring namespace (Prometheus)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 8001
+  # Allow from ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8001
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow external HTTPS (model downloads, etc.)
+  # TODO: Tighten to specific IPs/domains
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
