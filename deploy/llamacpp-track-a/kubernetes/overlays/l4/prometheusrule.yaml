@@ -1,0 +1,53 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gpt-oss20b-llamacpp-slo
+  labels:
+    app: gpt-oss20b-llamacpp
+    release: prometheus
+spec:
+  groups:
+    - name: llamacpp-slo
+      interval: 30s
+      rules:
+        # --- Recording rules ---
+        - record: llamacpp:tps:5m
+          # TPS = tokens per second across all pods
+          expr: sum(rate(llamacpp:tokens_predicted_total[5m]))
+        - record: llamacpp:prompt_tps:5m
+          expr: sum(rate(llamacpp:prompt_tokens_total[5m]))
+        # Optional TTFT p95: this requires a metric 'llamacpp:ttft_seconds_bucket'
+        # If you add a sidecar/exporter emitting it, this will work;
+        # otherwise the expression will be 'absent()' and alerts will stay inactive.
+        - record: llamacpp:ttft_p95:5m
+          expr: |
+            clamp_min(
+              histogram_quantile(0.95, sum(rate(llamacpp:ttft_seconds_bucket[5m])) by (le)),
+              0
+            )
+        # --- Alerts ---
+        - alert: LowTPS
+          expr: llamacpp:tps:5m < 10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Low throughput (TPS) on llama.cpp"
+            description: "Output token rate over 5m below 10 TPS."
+        - alert: HighTTFTp95
+          # Fires only if ttft metric is present and exceeds 500ms
+          expr: llamacpp:ttft_p95:5m > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High TTFT p95"
+            description: "p95 TTFT over last 5m is above 500ms (requires ttft_seconds exporter)."
+        - alert: LlamaServerDown
+          expr: up{service="gpt-oss20b-llamacpp"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "llama.cpp endpoint down"
+            description: "No scrape targets responding for 2 minutes."

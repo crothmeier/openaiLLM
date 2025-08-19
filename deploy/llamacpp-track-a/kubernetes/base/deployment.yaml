@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt-oss20b-llamacpp
+  labels:
+    app: gpt-oss20b-llamacpp
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gpt-oss20b-llamacpp
+  template:
+    metadata:
+      labels:
+        app: gpt-oss20b-llamacpp
+    spec:
+      # Uncomment if your cluster uses NVIDIA runtime class
+      # runtimeClassName: nvidia
+      containers:
+        - name: llama-server
+          image: ghcr.io/ggml-org/llama.cpp:server-cuda-b4890
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--model"
+            - "/models/gpt-oss-20b-mxfp4.gguf"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8010"
+            - "--ctx-size"
+            - "8192"
+            - "--n-gpu-layers"
+            - "999"
+            - "-np"
+            - "4"
+            - "--metrics"
+            - "--no-webui"
+          ports:
+            - containerPort: 8010
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+      volumes:
+        - name: models
+          emptyDir: {}

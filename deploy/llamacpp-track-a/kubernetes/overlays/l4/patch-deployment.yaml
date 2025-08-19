@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt-oss20b-llamacpp
+spec:
+  template:
+    spec:
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      volumes:
+        - name: models
+          hostPath:
+            path: /mnt/nvme/models/gpt-oss-20b
+            type: DirectoryOrCreate
+      containers:
+        - name: llama-server
+          args:
+            - "--model"
+            - "/models/gpt-oss-20b-mxfp4.gguf"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8010"
+            - "--ctx-size"
+            - "8192"
+            - "--n-gpu-layers"
+            - "999"
+            - "-np"
+            - "4"
+            - "--metrics"
+            - "--no-webui"

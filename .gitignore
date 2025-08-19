@@ -76,3 +76,12 @@ audit/*/claude_session.txt
 # Audit session logs
 audit/*/claude_session.txt
 audit/**/*.txt
+
+# model artifacts
+*.gguf
+*.safetensors
+*.pt
+*.bin
+
+# archives
+*.zip

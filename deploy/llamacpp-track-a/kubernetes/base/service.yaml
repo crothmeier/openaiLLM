@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpt-oss20b-llamacpp
+  labels:
+    app: gpt-oss20b-llamacpp
+spec:
+  selector:
+    app: gpt-oss20b-llamacpp
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8010
+      targetPort: 8010

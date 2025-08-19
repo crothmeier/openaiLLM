@@ -1,0 +1,31 @@
+[Unit]
+Description=llama.cpp OpenAI-compatible server (GPT-OSS-20B MXFP4)
+After=network-online.target nvidia-persistenced.service
+Wants=network-online.target
+
+[Service]
+# Tunables live in /etc/llamacpp/llamacpp.env
+EnvironmentFile=-/etc/llamacpp/llamacpp.env
+WorkingDirectory=/var/lib/llamacpp
+ExecStartPre=/usr/bin/test -r ${MODEL}
+ExecStart=/opt/llama.cpp/build/bin/llama-server       --model ${MODEL}       --host ${HOST}       --port ${PORT}       --ctx-size ${CONTEXT}       --threads ${THREADS}       --n-gpu-layers ${NGPU_LAYERS}       -np ${SLOTS}       --metrics       --no-webui
+Restart=always
+RestartSec=3
+
+# Security hardening (adjust ReadWritePaths if models live elsewhere)
+DynamicUser=yes
+User=llamacpp
+Group=llamacpp
+StateDirectory=llamacpp
+CacheDirectory=llamacpp
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitNOFILE=1048576
+ReadWritePaths=/mnt/nvme/models
+
+[Install]
+WantedBy=multi-user.target
