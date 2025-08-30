@@ -1,87 +1,30 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyc
-.Python
-build/
-dist/
-*.egg-info/
-.pytest_cache/
-htmlcov/
-.coverage
-.coverage.*
-.mypy_cache/
-
-# Virtual environments
-venv/
-.venv/
-env/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-.DS_Store
-.claude/
-
-# External repositories (not part of this repo)
-llama.cpp/
-
-# Test outputs and results
-results/
-test-outputs/
-.benchmarks/
-
-# Archive directory
-/archive/
-
-# Model files (too large)
-*.gguf
-*.safetensors
-*.bin
-*.pt
-*.onnx
-
-# Large files
-*.zip
-*.tar
-*.tar.gz
-
-# Backup files
-*.backup
-*.bak
-*-old.*
-*.orig
-
-# Logs
-*.log
-logs/
-
-# Environment files
+# --- Secrets & dev envs ---
 .env
-.env.local
+.env.*
+*.env
+.envrc
+.secrets/
+*.key
+*.pfx
+*.p12
+id_rsa
+id_ed25519
 
-# Temporary files
-tmp/
-temp/
-*.tmp
+# --- Hugging Face / model blobs (do NOT commit) ---
+**/*.safetensors
+**/*.gguf
+**/*.pt
+**/pytorch_model*.bin
+**/optimizer_*.bin
+**/generation_config.json
+**/tokenizer.model
+**/spiece.model
+**/hf-cache/**
+**/.cache/huggingface/**
+**/.huggingface/**
 
-# Project specific
-/mnt/nvme/
+# --- If anyone creates models in-repo (defensive) ---
+models/
 
-# Audit session logs (contain terminal control chars)
-audit/*/claude_session.txt
-
-# Audit session logs
-audit/*/claude_session.txt
-audit/**/*.txt
-
-# model artifacts
-*.gguf
-*.safetensors
-*.pt
-*.bin
-
-# archives
-*.zip
+# --- Jupyter noise ---
+**/.ipynb_checkpoints/
