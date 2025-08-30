@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+MSG_FILE="$1"
+if [ ! -s "$MSG_FILE" ]; then
+  cat ".git-commit-template.txt" > "$MSG_FILE"
+fi

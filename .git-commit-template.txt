@@ -1,0 +1,6 @@
+<type>(scope): <subject>
+
+<body>
+
+<footer>
+Signed-off-by: Lazarus Laboratories <ops@lazarus-labs.com>

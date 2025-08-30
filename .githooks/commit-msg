@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if ! grep -qE '^Signed-off-by:\s+Lazarus Laboratories\s+<ops@lazarus-labs\.com>\s*$' "$1"; then
+  echo "ERROR: Missing required trailer: Signed-off-by: Lazarus Laboratories <ops@lazarus-labs.com>" >&2
+  exit 1
+fi
