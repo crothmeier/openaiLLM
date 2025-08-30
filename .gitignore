@@ -14,8 +14,7 @@ id_ed25519
 **/*.safetensors
 **/*.gguf
 **/*.pt
-**/pytorch_model.bin
-**/pytorch_model-*.bin
+**/pytorch_model*.bin
 **/optimizer_*.bin
 **/generation_config.json
 **/tokenizer.model
