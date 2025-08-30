@@ -1,29 +1,4 @@
-#!/bin/bash
-# Pre-commit hook for openaiLLM repository
-# Enforces code quality and security standards
-
-set -euo pipefail
-
-echo "Running pre-commit checks..."
-
-# Check for secrets and sensitive data
-if command -v gitleaks >/dev/null 2>&1; then
-    echo "Checking for secrets with gitleaks..."
-    gitleaks protect --staged --verbose
-fi
-
-# Check for Python syntax errors
-if [ -n "$(git diff --cached --name-only | grep '\.py$')" ]; then
-    echo "Checking Python files..."
-    git diff --cached --name-only | grep '\.py$' | xargs python -m py_compile
-fi
-
-# Check for shell script syntax
-if [ -n "$(git diff --cached --name-only | grep '\.sh$')" ]; then
-    echo "Checking shell scripts..."
-    if command -v shellcheck >/dev/null 2>&1; then
-        git diff --cached --name-only | grep '\.sh$' | xargs shellcheck
-    fi
-fi
-
-echo "Pre-commit checks completed successfully."
+#!/bin/sh
+set -eu
+repo_root="$(git rev-parse --show-toplevel)"
+exec "$repo_root/scripts/precommit_forbid_hf.sh"
